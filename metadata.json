@@ -1,0 +1,6 @@
+{
+  "name": "SEO Agent",
+  "description": "AI-assisted SEO platform for technical site audits, keyword research, domain metrics, rank tracking, and lead outreach.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

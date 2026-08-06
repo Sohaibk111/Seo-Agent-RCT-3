@@ -1,0 +1,8 @@
+# Crontab Example for Automated SEO Agent Database & State Backups
+# Edit crontab using: crontab -e
+
+# Daily PostgreSQL backup at 02:00 AM UTC
+0 2 * * * /bin/bash /app/scripts/backup_db.sh >> /var/log/seo_agent_backup.log 2>&1
+
+# Weekly backup retention check every Sunday at 03:00 AM UTC
+0 3 * * 0 find /var/backups/seo_agent -name "*.sql.gz" -mtime +14 -delete >> /var/log/seo_agent_backup.log 2>&1
