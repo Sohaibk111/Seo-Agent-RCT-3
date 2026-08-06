@@ -43,15 +43,40 @@ class Website(Base):
     __table_args__ = (
         Index("ix_websites_user_domain", "user_id", "domain"),
         Index("ix_websites_user_created", "user_id", "created_at"),
+        Index("ix_websites_project_id", "project_id"),
+        Index("ix_websites_organization_id", "organization_id"),
+        Index("ix_websites_owner_id", "owner_id"),
+        Index("ix_websites_domain", "domain"),
+        Index("ix_websites_normalized_domain", "normalized_domain"),
+        Index("ix_websites_org_normalized_domain", "organization_id", "normalized_domain", unique=True),
+        Index("ix_websites_project_archived", "project_id", "archived"),
+        Index("ix_websites_org_archived", "organization_id", "archived"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    url = Column(String, nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    url = Column(String, nullable=True)
     domain = Column(String, index=True, nullable=False)
+    normalized_domain = Column(String, index=True, nullable=False)
+    protocol = Column(String, default="https", nullable=False)
+    status = Column(String, default="active", nullable=False)
+    verification_status = Column(String, default="unverified", nullable=False)
+    favicon = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+    language = Column(String, default="en", nullable=False)
+    timezone = Column(String, default="UTC", nullable=False)
+    settings = Column(JSON, default=dict)
     company_name = Column(String, nullable=True)
+    last_scan_at = Column(DateTime, nullable=True)
+    archived = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    project = relationship("Project", back_populates="websites")
+    organization = relationship("Organization", back_populates="websites")
     owner = relationship("User", back_populates="websites")
     audits = relationship("AuditResult", back_populates="website", cascade="all, delete-orphan")
     leads = relationship("Lead", back_populates="website", cascade="all, delete-orphan")
@@ -305,6 +330,7 @@ class Organization(Base):
     invitations = relationship("Invitation", back_populates="organization", cascade="all, delete-orphan")
     audit_events = relationship("OrganizationAuditEvent", back_populates="organization", cascade="all, delete-orphan")
     projects = relationship("Project", back_populates="organization", cascade="all, delete-orphan")
+    websites = relationship("Website", back_populates="organization", cascade="all, delete-orphan")
 
 
 class Membership(Base):
@@ -399,6 +425,7 @@ class Project(Base):
 
     organization = relationship("Organization", back_populates="projects")
     owner = relationship("User", back_populates="projects")
+    websites = relationship("Website", back_populates="project", cascade="all, delete-orphan")
 
 
 

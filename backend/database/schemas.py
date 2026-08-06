@@ -327,34 +327,92 @@ class AuditLogPaginated(BaseModel):
 
 # Website Schemas
 class WebsiteBase(BaseModel):
-    url: str
+    url: Optional[str] = None
     domain: Optional[str] = None
     company_name: Optional[str] = Field(None, max_length=100)
 
-    @field_validator("url")
-    @classmethod
-    def validate_url(cls, v: str) -> str:
-        res = validate_url_str(v)
-        if not res:
-            raise ValueError("URL is required")
-        return res
+class WebsiteCreate(BaseModel):
+    domain: str = Field(..., min_length=1, max_length=255)
+    protocol: Optional[str] = Field("https", max_length=10)
+    status: Optional[str] = Field("active", max_length=50)
+    verification_status: Optional[str] = Field("unverified", max_length=50)
+    favicon: Optional[str] = Field(None, max_length=500)
+    country: Optional[str] = Field(None, max_length=10)
+    language: Optional[str] = Field("en", max_length=10)
+    timezone: Optional[str] = Field("UTC", max_length=50)
+    settings: Optional[dict] = Field(default_factory=dict)
 
-    @field_validator("domain")
-    @classmethod
-    def validate_domain(cls, v: Optional[str]) -> Optional[str]:
-        return validate_domain_str(v)
+class WebsiteUpdate(BaseModel):
+    domain: Optional[str] = Field(None, max_length=255)
+    protocol: Optional[str] = Field(None, max_length=10)
+    status: Optional[str] = Field(None, max_length=50)
+    verification_status: Optional[str] = Field(None, max_length=50)
+    favicon: Optional[str] = Field(None, max_length=500)
+    country: Optional[str] = Field(None, max_length=10)
+    language: Optional[str] = Field(None, max_length=10)
+    timezone: Optional[str] = Field(None, max_length=50)
+    settings: Optional[dict] = None
 
-class WebsiteCreate(WebsiteBase):
-    pass
+class WebsiteSettingsUpdate(BaseModel):
+    settings: dict = Field(..., description="Website settings dictionary")
 
-class WebsiteOut(WebsiteBase):
+class WebsiteOut(BaseModel):
     id: int
-    user_id: int
+    project_id: Optional[int] = None
+    organization_id: Optional[int] = None
+    owner_id: Optional[int] = None
+    user_id: Optional[int] = None
+    url: Optional[str] = None
     domain: str
+    normalized_domain: Optional[str] = None
+    protocol: str = "https"
+    status: str = "active"
+    verification_status: str = "unverified"
+    favicon: Optional[str] = None
+    country: Optional[str] = None
+    language: str = "en"
+    timezone: str = "UTC"
+    settings: dict = Field(default_factory=dict)
+    company_name: Optional[str] = None
+    last_scan_at: Optional[datetime] = None
+    archived: bool = False
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+
+class WebsiteMetadataOut(BaseModel):
+    website_id: int
+    project_id: Optional[int] = None
+    organization_id: Optional[int] = None
+    owner_id: Optional[int] = None
+    domain: str
+    normalized_domain: str
+    protocol: str
+    status: str
+    verification_status: str
+    favicon: Optional[str] = None
+    country: Optional[str] = None
+    language: str
+    timezone: str
+    archived: bool
+    settings_count: int
+    last_scan_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+class WebsiteStatsOut(BaseModel):
+    website_id: int
+    project_id: Optional[int] = None
+    organization_id: Optional[int] = None
+    domain: str
+    status: str
+    archived: bool
+    created_days_ago: int
+    settings_keys_count: int
+    total_audits: int
+    total_leads: int
 
 # Audit Schemas
 class AuditCreate(BaseModel):

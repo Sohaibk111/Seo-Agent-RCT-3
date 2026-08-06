@@ -91,11 +91,26 @@ export interface PasswordResetTokenRecord {
 
 export interface WebsiteRecord {
   id: number;
+  project_id?: number;
+  organization_id?: number;
+  owner_id?: number;
   user_id: number;
   url: string;
   domain: string;
+  normalized_domain?: string;
+  protocol?: string;
+  status?: string;
+  verification_status?: string;
+  favicon?: string | null;
+  country?: string | null;
+  language?: string;
+  timezone?: string;
+  settings?: Record<string, any>;
   company_name?: string;
+  last_scan_at?: string | null;
+  archived?: boolean;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface AuditRecord {
@@ -1222,6 +1237,28 @@ function slugify(text: string): string {
   return text.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
 }
 
+export function normalizeDomain(domain: string): string {
+  if (!domain) return '';
+  let d = domain.trim().toLowerCase();
+  if (d.includes('://')) {
+    d = d.split('://')[1];
+  }
+  d = d.split('/')[0].split('?')[0].split('#')[0].split(':')[0];
+  if (d.startsWith('www.')) {
+    d = d.slice(4);
+  }
+  return d.trim();
+}
+
+export function isValidDomain(domain: string): boolean {
+  if (!domain || domain.length > 253) return false;
+  const norm = normalizeDomain(domain);
+  if (!norm) return false;
+  if (norm === 'localhost') return true;
+  const regex = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
+  return regex.test(norm);
+}
+
 app.post('/api/v1/orgs/:org_id/projects', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const orgId = parseInt(req.params.org_id, 10);
   const { name, slug, description, status = 'active', color, icon, timezone = 'UTC', language = 'en', settings = {} } = req.body;
@@ -1479,6 +1516,388 @@ app.get('/api/v1/orgs/:org_id/projects/:id_or_slug/activity', requireAuth, (req:
       created_at: project.created_at
     }
   ]);
+});
+
+// Project Website Management Routes
+app.post('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const { domain, protocol = 'https', status = 'active', verification_status = 'unverified', favicon, country, language = 'en', timezone = 'UTC', settings = {} } = req.body;
+
+  if (!domain || typeof domain !== 'string' || !isValidDomain(domain)) {
+    return res.status(422).json({ error: 'Invalid domain format', status_code: 422 });
+  }
+
+  const normDomain = normalizeDomain(domain);
+  const existing = websites.find(w => w.organization_id === orgId && w.normalized_domain === normDomain);
+  if (existing) {
+    return res.status(409).json({ error: `Website with domain '${normDomain}' already exists in this organization`, status_code: 409 });
+  }
+
+  const cleanProtocol = (protocol || 'https').toLowerCase().replace('://', '').trim();
+  const newWebsite: WebsiteRecord = {
+    id: websites.length + 1,
+    project_id: project.id,
+    organization_id: orgId,
+    owner_id: req.user!.id,
+    user_id: req.user!.id,
+    url: `${cleanProtocol}://${normDomain}`,
+    domain: normDomain,
+    normalized_domain: normDomain,
+    protocol: cleanProtocol,
+    status,
+    verification_status,
+    favicon: favicon || null,
+    country: country || null,
+    language,
+    timezone,
+    settings,
+    company_name: normDomain.split('.')[0].toUpperCase(),
+    last_scan_at: null,
+    archived: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+
+  websites.push(newWebsite);
+  logSecurityEvent('website.created', req.user!.id, 'info', req.ip, req.headers['user-agent'], null, { website_id: newWebsite.id, project_id: project.id, domain: normDomain });
+  res.status(201).json(newWebsite);
+});
+
+app.get('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const { search, status, archived } = req.query;
+  let filtered = websites.filter(w => w.organization_id === orgId && w.project_id === project.id);
+
+  if (search && typeof search === 'string') {
+    const s = search.toLowerCase();
+    const normS = normalizeDomain(search);
+    filtered = filtered.filter(w => 
+      w.domain.toLowerCase().includes(s) || 
+      (w.normalized_domain && w.normalized_domain.includes(normS)) ||
+      (w.company_name && w.company_name.toLowerCase().includes(s))
+    );
+  }
+
+  if (status && typeof status === 'string') {
+    filtered = filtered.filter(w => w.status === status);
+  }
+
+  if (archived !== undefined) {
+    const isArchived = archived === 'true' || archived === '1';
+    filtered = filtered.filter(w => Boolean(w.archived) === isArchived);
+  }
+
+  res.json(filtered);
+});
+
+app.get('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites/:website_id_or_domain', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const webParam = req.params.website_id_or_domain;
+
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const normWebParam = normalizeDomain(webParam);
+  const website = websites.find(w => 
+    w.organization_id === orgId && 
+    w.project_id === project.id && 
+    (w.id.toString() === webParam || w.domain === webParam || w.normalized_domain === normWebParam)
+  );
+
+  if (!website) {
+    return res.status(404).json({ error: 'Website not found in this project', status_code: 404 });
+  }
+
+  res.json(website);
+});
+
+app.put('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites/:website_id_or_domain', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const webParam = req.params.website_id_or_domain;
+
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const normWebParam = normalizeDomain(webParam);
+  const website = websites.find(w => 
+    w.organization_id === orgId && 
+    w.project_id === project.id && 
+    (w.id.toString() === webParam || w.domain === webParam || w.normalized_domain === normWebParam)
+  );
+
+  if (!website) {
+    return res.status(404).json({ error: 'Website not found in this project', status_code: 404 });
+  }
+
+  const { domain, protocol, status, verification_status, favicon, country, language, timezone, settings } = req.body;
+
+  if (domain !== undefined) {
+    if (!domain || typeof domain !== 'string' || !isValidDomain(domain)) {
+      return res.status(422).json({ error: 'Invalid domain format', status_code: 422 });
+    }
+    const normDomain = normalizeDomain(domain);
+    const existing = websites.find(w => w.organization_id === orgId && w.normalized_domain === normDomain && w.id !== website.id);
+    if (existing) {
+      return res.status(409).json({ error: `Website with domain '${normDomain}' already exists in this organization`, status_code: 409 });
+    }
+    website.domain = domain;
+    website.normalized_domain = normDomain;
+  }
+
+  if (protocol !== undefined) website.protocol = protocol.toLowerCase().replace('://', '').trim();
+  if (website.normalized_domain && website.protocol) {
+    website.url = `${website.protocol}://${website.normalized_domain}`;
+  }
+
+  if (status !== undefined) website.status = status;
+  if (verification_status !== undefined) website.verification_status = verification_status;
+  if (favicon !== undefined) website.favicon = favicon;
+  if (country !== undefined) website.country = country;
+  if (language !== undefined) website.language = language;
+  if (timezone !== undefined) website.timezone = timezone;
+  if (settings !== undefined) website.settings = settings;
+
+  website.updated_at = new Date().toISOString();
+  logSecurityEvent('website.updated', req.user!.id, 'info', req.ip, req.headers['user-agent'], null, { website_id: website.id, project_id: project.id });
+  res.json(website);
+});
+
+app.delete('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites/:website_id_or_domain', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const webParam = req.params.website_id_or_domain;
+
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const normWebParam = normalizeDomain(webParam);
+  const idx = websites.findIndex(w => 
+    w.organization_id === orgId && 
+    w.project_id === project.id && 
+    (w.id.toString() === webParam || w.domain === webParam || w.normalized_domain === normWebParam)
+  );
+
+  if (idx === -1) {
+    return res.status(404).json({ error: 'Website not found in this project', status_code: 404 });
+  }
+
+  const removed = websites.splice(idx, 1)[0];
+  logSecurityEvent('website.deleted', req.user!.id, 'warning', req.ip, req.headers['user-agent'], null, { website_id: removed.id, project_id: project.id });
+  res.json({ message: 'Website deleted successfully', id: removed.id });
+});
+
+app.post('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites/:website_id_or_domain/archive', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const webParam = req.params.website_id_or_domain;
+
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const normWebParam = normalizeDomain(webParam);
+  const website = websites.find(w => 
+    w.organization_id === orgId && 
+    w.project_id === project.id && 
+    (w.id.toString() === webParam || w.domain === webParam || w.normalized_domain === normWebParam)
+  );
+
+  if (!website) {
+    return res.status(404).json({ error: 'Website not found in this project', status_code: 404 });
+  }
+
+  website.archived = true;
+  website.status = 'archived';
+  website.updated_at = new Date().toISOString();
+  logSecurityEvent('website.archived', req.user!.id, 'info', req.ip, req.headers['user-agent'], null, { website_id: website.id, project_id: project.id });
+  res.json(website);
+});
+
+app.post('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites/:website_id_or_domain/restore', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const webParam = req.params.website_id_or_domain;
+
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const normWebParam = normalizeDomain(webParam);
+  const website = websites.find(w => 
+    w.organization_id === orgId && 
+    w.project_id === project.id && 
+    (w.id.toString() === webParam || w.domain === webParam || w.normalized_domain === normWebParam)
+  );
+
+  if (!website) {
+    return res.status(404).json({ error: 'Website not found in this project', status_code: 404 });
+  }
+
+  website.archived = false;
+  website.status = 'active';
+  website.updated_at = new Date().toISOString();
+  logSecurityEvent('website.restored', req.user!.id, 'info', req.ip, req.headers['user-agent'], null, { website_id: website.id, project_id: project.id });
+  res.json(website);
+});
+
+app.get('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites/:website_id_or_domain/settings', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const webParam = req.params.website_id_or_domain;
+
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const normWebParam = normalizeDomain(webParam);
+  const website = websites.find(w => 
+    w.organization_id === orgId && 
+    w.project_id === project.id && 
+    (w.id.toString() === webParam || w.domain === webParam || w.normalized_domain === normWebParam)
+  );
+
+  if (!website) {
+    return res.status(404).json({ error: 'Website not found in this project', status_code: 404 });
+  }
+
+  res.json({ website_id: website.id, settings: website.settings || {} });
+});
+
+app.put('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites/:website_id_or_domain/settings', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const webParam = req.params.website_id_or_domain;
+
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const normWebParam = normalizeDomain(webParam);
+  const website = websites.find(w => 
+    w.organization_id === orgId && 
+    w.project_id === project.id && 
+    (w.id.toString() === webParam || w.domain === webParam || w.normalized_domain === normWebParam)
+  );
+
+  if (!website) {
+    return res.status(404).json({ error: 'Website not found in this project', status_code: 404 });
+  }
+
+  const { settings } = req.body;
+  if (!settings || typeof settings !== 'object') {
+    return res.status(422).json({ error: 'Request validation failed', detail: 'settings object required' });
+  }
+
+  website.settings = settings;
+  website.updated_at = new Date().toISOString();
+  logSecurityEvent('website.settings_changed', req.user!.id, 'info', req.ip, req.headers['user-agent'], null, { website_id: website.id, project_id: project.id });
+  res.json(website);
+});
+
+app.get('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites/:website_id_or_domain/metadata', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const webParam = req.params.website_id_or_domain;
+
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const normWebParam = normalizeDomain(webParam);
+  const website = websites.find(w => 
+    w.organization_id === orgId && 
+    w.project_id === project.id && 
+    (w.id.toString() === webParam || w.domain === webParam || w.normalized_domain === normWebParam)
+  );
+
+  if (!website) {
+    return res.status(404).json({ error: 'Website not found in this project', status_code: 404 });
+  }
+
+  res.json({
+    website_id: website.id,
+    project_id: website.project_id,
+    organization_id: website.organization_id,
+    owner_id: website.owner_id,
+    domain: website.domain,
+    normalized_domain: website.normalized_domain || normalizeDomain(website.domain),
+    protocol: website.protocol || 'https',
+    status: website.status || 'active',
+    verification_status: website.verification_status || 'unverified',
+    favicon: website.favicon || null,
+    country: website.country || null,
+    language: website.language || 'en',
+    timezone: website.timezone || 'UTC',
+    archived: Boolean(website.archived),
+    settings_count: Object.keys(website.settings || {}).length,
+    last_scan_at: website.last_scan_at || null,
+    created_at: website.created_at,
+    updated_at: website.updated_at
+  });
+});
+
+app.get('/api/v1/orgs/:org_id/projects/:project_id_or_slug/websites/:website_id_or_domain/stats', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const orgId = parseInt(req.params.org_id, 10);
+  const projParam = req.params.project_id_or_slug;
+  const webParam = req.params.website_id_or_domain;
+
+  const project = projects.find(p => p.organization_id === orgId && (p.id.toString() === projParam || p.slug === projParam));
+  if (!project) {
+    return res.status(404).json({ error: 'Project not found in this organization', status_code: 404 });
+  }
+
+  const normWebParam = normalizeDomain(webParam);
+  const website = websites.find(w => 
+    w.organization_id === orgId && 
+    w.project_id === project.id && 
+    (w.id.toString() === webParam || w.domain === webParam || w.normalized_domain === normWebParam)
+  );
+
+  if (!website) {
+    return res.status(404).json({ error: 'Website not found in this project', status_code: 404 });
+  }
+
+  const daysOld = Math.floor((Date.now() - new Date(website.created_at).getTime()) / (1000 * 60 * 60 * 24));
+  const totalAudits = auditResults.filter(a => a.website_id === website.id).length;
+  const totalLeads = leads.filter(l => l.website_id === website.id).length;
+
+  res.json({
+    website_id: website.id,
+    project_id: website.project_id,
+    organization_id: website.organization_id,
+    domain: website.domain,
+    status: website.status || 'active',
+    archived: Boolean(website.archived),
+    created_days_ago: Math.max(0, daysOld),
+    settings_keys_count: Object.keys(website.settings || {}).length,
+    total_audits: totalAudits,
+    total_leads: totalLeads
+  });
 });
 
 // Leads & Outreach

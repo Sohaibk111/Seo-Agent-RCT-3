@@ -1258,14 +1258,16 @@ async def get_website_by_domain_unfiltered_async(db: AsyncSession, domain: str) 
     return result.scalars().first()
 
 def create_website(db: Session, user_id: int, url: str, domain: str, company_name: Optional[str] = None) -> Website:
-    website = Website(user_id=user_id, url=url, domain=domain, company_name=company_name)
+    norm = normalize_domain(domain)
+    website = Website(user_id=user_id, owner_id=user_id, url=url, domain=domain, normalized_domain=norm, company_name=company_name)
     db.add(website)
     db.commit()
     db.refresh(website)
     return website
 
 async def create_website_async(db: AsyncSession, user_id: int, url: str, domain: str, company_name: Optional[str] = None) -> Website:
-    website = Website(user_id=user_id, url=url, domain=domain, company_name=company_name)
+    norm = normalize_domain(domain)
+    website = Website(user_id=user_id, owner_id=user_id, url=url, domain=domain, normalized_domain=norm, company_name=company_name)
     db.add(website)
     await db.commit()
     await db.refresh(website)
@@ -1986,4 +1988,373 @@ async def get_user_leads_cursor_async(
         Lead.user_id == user_id
     )
     return await async_cursor_paginate(db, stmt, column=Lead.id, cursor=cursor, limit=limit, order=order)
+
+
+# --- WEBSITE DOMAIN & PROJECT MANAGEMENT CRUD ---
+
+DOMAIN_REGEX = re.compile(r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$')
+
+def normalize_domain(domain: str) -> str:
+    if not domain:
+        return ""
+    d = domain.strip().lower()
+    if "://" in d:
+        d = d.split("://", 1)[1]
+    d = d.split("/", 1)[0]
+    d = d.split("?", 1)[0]
+    d = d.split("#", 1)[0]
+    d = d.split(":", 1)[0]
+    if d.startswith("www."):
+        d = d[4:]
+    return d.strip()
+
+def is_valid_domain(domain: str) -> bool:
+    if not domain or len(domain) > 253:
+        return False
+    norm = normalize_domain(domain)
+    if not norm:
+        return False
+    if norm == "localhost":
+        return True
+    return bool(DOMAIN_REGEX.match(norm))
+
+async def get_org_website_by_normalized_domain_async(
+    db: AsyncSession,
+    organization_id: int,
+    normalized_domain: str,
+    exclude_website_id: Optional[int] = None
+) -> Optional[Website]:
+    stmt = select(Website).where(
+        Website.organization_id == organization_id,
+        Website.normalized_domain == normalized_domain
+    )
+    if exclude_website_id:
+        stmt = stmt.where(Website.id != exclude_website_id)
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def get_project_website_by_id_or_domain_async(
+    db: AsyncSession,
+    project_id: int,
+    website_id_or_domain: str
+) -> Optional[Website]:
+    norm_search = normalize_domain(website_id_or_domain)
+    if website_id_or_domain.isdigit():
+        stmt = select(Website).where(
+            Website.project_id == project_id,
+            or_(
+                Website.id == int(website_id_or_domain),
+                Website.domain == website_id_or_domain,
+                Website.normalized_domain == norm_search
+            )
+        )
+    else:
+        stmt = select(Website).where(
+            Website.project_id == project_id,
+            or_(
+                Website.domain == website_id_or_domain,
+                Website.normalized_domain == norm_search
+            )
+        )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def get_project_websites_async(
+    db: AsyncSession,
+    project_id: int,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    archived: Optional[bool] = None,
+    skip: int = 0,
+    limit: int = 50
+) -> Tuple[List[Website], int]:
+    stmt = select(Website).where(Website.project_id == project_id)
+    count_stmt = select(func.count(Website.id)).where(Website.project_id == project_id)
+
+    if search:
+        pattern = f"%{search}%"
+        norm_pat = f"%{normalize_domain(search)}%"
+        cond = or_(
+            Website.domain.ilike(pattern),
+            Website.normalized_domain.ilike(norm_pat),
+            Website.company_name.ilike(pattern)
+        )
+        stmt = stmt.where(cond)
+        count_stmt = count_stmt.where(cond)
+
+    if status:
+        stmt = stmt.where(Website.status == status)
+        count_stmt = count_stmt.where(Website.status == status)
+
+    if archived is not None:
+        stmt = stmt.where(Website.archived == archived)
+        count_stmt = count_stmt.where(Website.archived == archived)
+
+    stmt = stmt.order_by(Website.created_at.desc()).offset(skip).limit(limit)
+
+    total_res = await db.execute(count_stmt)
+    total = total_res.scalar_one()
+
+    items_res = await db.execute(stmt)
+    items = list(items_res.scalars().all())
+
+    return items, total
+
+async def create_project_website_async(
+    db: AsyncSession,
+    project_id: int,
+    organization_id: int,
+    owner_id: int,
+    domain: str,
+    protocol: str = "https",
+    status: str = "active",
+    verification_status: str = "unverified",
+    favicon: Optional[str] = None,
+    country: Optional[str] = None,
+    language: str = "en",
+    timezone: str = "UTC",
+    settings: Optional[dict] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None
+) -> Website:
+    norm_domain = normalize_domain(domain)
+    existing = await get_org_website_by_normalized_domain_async(db, organization_id, norm_domain)
+    if existing:
+        raise ConflictException(f"Website with domain '{norm_domain}' already exists in this organization")
+
+    clean_protocol = (protocol or "https").lower().replace("://", "").strip()
+    full_url = f"{clean_protocol}://{norm_domain}"
+    settings_dict = settings or {}
+
+    website = Website(
+        project_id=project_id,
+        organization_id=organization_id,
+        owner_id=owner_id,
+        user_id=owner_id,
+        domain=norm_domain,
+        normalized_domain=norm_domain,
+        protocol=clean_protocol,
+        status=status or "active",
+        verification_status=verification_status or "unverified",
+        favicon=favicon,
+        country=country,
+        language=language or "en",
+        timezone=timezone or "UTC",
+        settings=settings_dict,
+        url=full_url,
+        company_name=norm_domain.split('.')[0].upper(),
+        archived=False
+    )
+    db.add(website)
+    await db.commit()
+    await db.refresh(website)
+
+    await log_audit_event_async(
+        db,
+        action="website.created",
+        user_id=owner_id,
+        organization_id=organization_id,
+        target_resource=f"website:{website.id}",
+        ip_address=ip_address,
+        user_agent=user_agent,
+        details={"website_id": website.id, "project_id": project_id, "domain": norm_domain}
+    )
+    await create_org_audit_event_async(
+        db,
+        org_id=organization_id,
+        action="website.created",
+        actor_id=owner_id,
+        details={"website_id": website.id, "project_id": project_id, "domain": norm_domain}
+    )
+
+    return website
+
+async def update_project_website_async(
+    db: AsyncSession,
+    website: Website,
+    domain: Optional[str] = None,
+    protocol: Optional[str] = None,
+    status: Optional[str] = None,
+    verification_status: Optional[str] = None,
+    favicon: Optional[str] = None,
+    country: Optional[str] = None,
+    language: Optional[str] = None,
+    timezone: Optional[str] = None,
+    settings: Optional[dict] = None,
+    actor_id: Optional[int] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None
+) -> Website:
+    changed_keys = []
+
+    if domain is not None and domain != website.domain:
+        norm_domain = normalize_domain(domain)
+        existing = await get_org_website_by_normalized_domain_async(
+            db, website.organization_id, norm_domain, exclude_website_id=website.id
+        )
+        if existing:
+            raise ConflictException(f"Website with domain '{norm_domain}' already exists in this organization")
+        website.domain = domain
+        website.normalized_domain = norm_domain
+        changed_keys.append("domain")
+
+    if protocol is not None:
+        website.protocol = protocol.lower().replace("://", "").strip()
+        changed_keys.append("protocol")
+
+    if website.normalized_domain and website.protocol:
+        website.url = f"{website.protocol}://{website.normalized_domain}"
+
+    if status is not None:
+        website.status = status
+        changed_keys.append("status")
+
+    if verification_status is not None:
+        website.verification_status = verification_status
+        changed_keys.append("verification_status")
+
+    if favicon is not None:
+        website.favicon = favicon
+        changed_keys.append("favicon")
+
+    if country is not None:
+        website.country = country
+        changed_keys.append("country")
+
+    if language is not None:
+        website.language = language
+        changed_keys.append("language")
+
+    if timezone is not None:
+        website.timezone = timezone
+        changed_keys.append("timezone")
+
+    settings_updated = False
+    if settings is not None:
+        website.settings = settings
+        changed_keys.append("settings")
+        settings_updated = True
+
+    website.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(website)
+
+    audit_action = "website.settings_changed" if (settings_updated and len(changed_keys) == 1) else "website.updated"
+
+    await log_audit_event_async(
+        db,
+        action=audit_action,
+        user_id=actor_id,
+        organization_id=website.organization_id,
+        target_resource=f"website:{website.id}",
+        ip_address=ip_address,
+        user_agent=user_agent,
+        details={"website_id": website.id, "project_id": website.project_id, "changes": changed_keys}
+    )
+    await create_org_audit_event_async(
+        db,
+        org_id=website.organization_id,
+        action=audit_action,
+        actor_id=actor_id,
+        details={"website_id": website.id, "project_id": website.project_id, "changes": changed_keys}
+    )
+
+    return website
+
+async def archive_project_website_async(
+    db: AsyncSession,
+    website: Website,
+    actor_id: Optional[int] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None
+) -> Website:
+    website.archived = True
+    website.status = "archived"
+    website.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(website)
+
+    await log_audit_event_async(
+        db,
+        action="website.archived",
+        user_id=actor_id,
+        organization_id=website.organization_id,
+        target_resource=f"website:{website.id}",
+        ip_address=ip_address,
+        user_agent=user_agent,
+        details={"website_id": website.id, "project_id": website.project_id, "domain": website.normalized_domain}
+    )
+    await create_org_audit_event_async(
+        db,
+        org_id=website.organization_id,
+        action="website.archived",
+        actor_id=actor_id,
+        details={"website_id": website.id, "project_id": website.project_id, "domain": website.normalized_domain}
+    )
+    return website
+
+async def restore_project_website_async(
+    db: AsyncSession,
+    website: Website,
+    actor_id: Optional[int] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None
+) -> Website:
+    website.archived = False
+    website.status = "active"
+    website.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(website)
+
+    await log_audit_event_async(
+        db,
+        action="website.restored",
+        user_id=actor_id,
+        organization_id=website.organization_id,
+        target_resource=f"website:{website.id}",
+        ip_address=ip_address,
+        user_agent=user_agent,
+        details={"website_id": website.id, "project_id": website.project_id, "domain": website.normalized_domain}
+    )
+    await create_org_audit_event_async(
+        db,
+        org_id=website.organization_id,
+        action="website.restored",
+        actor_id=actor_id,
+        details={"website_id": website.id, "project_id": website.project_id, "domain": website.normalized_domain}
+    )
+    return website
+
+async def delete_project_website_async(
+    db: AsyncSession,
+    website: Website,
+    actor_id: Optional[int] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None
+) -> None:
+    w_id = website.id
+    p_id = website.project_id
+    org_id = website.organization_id
+    d_name = website.normalized_domain or website.domain
+
+    await log_audit_event_async(
+        db,
+        action="website.deleted",
+        user_id=actor_id,
+        organization_id=org_id,
+        target_resource=f"website:{w_id}",
+        ip_address=ip_address,
+        user_agent=user_agent,
+        details={"website_id": w_id, "project_id": p_id, "domain": d_name}
+    )
+    await create_org_audit_event_async(
+        db,
+        org_id=org_id,
+        action="website.deleted",
+        actor_id=actor_id,
+        details={"website_id": w_id, "project_id": p_id, "domain": d_name}
+    )
+
+    await db.delete(website)
+    await db.commit()
 
