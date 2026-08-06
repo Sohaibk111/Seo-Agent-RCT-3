@@ -3,6 +3,7 @@ import hashlib
 import base64
 import json
 import time
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from backend.config import settings
@@ -17,6 +18,39 @@ def b64url_decode(data_str: str) -> bytes:
 def sign_hs256(msg: bytes, secret: str) -> str:
     signature = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).digest()
     return b64url_encode(signature)
+
+def get_password_hash(password: str) -> str:
+    """Hashes a password using PBKDF2-HMAC-SHA256 with 100,000 iterations and a secure salt."""
+    if not password:
+        return ""
+    salt = secrets.token_hex(16)
+    hashed = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt.encode('utf-8'),
+        100000
+    ).hex()
+    return f"pbkdf2:sha256:100000${salt}${hashed}"
+
+def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool:
+    """Verifies a plain text password against a stored hash string."""
+    if not hashed_password:
+        return True
+    try:
+        parts = hashed_password.split("$")
+        if len(parts) == 3 and parts[0] == "pbkdf2:sha256:100000":
+            salt = parts[1]
+            expected_hash = parts[2]
+            computed = hashlib.pbkdf2_hmac(
+                'sha256',
+                plain_password.encode('utf-8'),
+                salt.encode('utf-8'),
+                100000
+            ).hex()
+            return hmac.compare_digest(computed, expected_hash)
+    except Exception:
+        pass
+    return False
 
 def create_access_token(
     user_id: Optional[int] = None,
@@ -37,6 +71,7 @@ def create_access_token(
     payload: Dict[str, Any] = {
         "iat": now,
         "exp": expire,
+        "type": "access"
     }
 
     if data:
@@ -56,6 +91,41 @@ def create_access_token(
 
     header = {"alg": "HS256", "typ": "JWT"}
 
+    header_b64 = b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    payload_b64 = b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    signature_b64 = sign_hs256(signing_input, settings.SECRET_KEY)
+
+    return f"{header_b64}.{payload_b64}.{signature_b64}"
+
+def create_refresh_token(
+    user_id: int,
+    email: Optional[str] = None,
+    remember_me: bool = False,
+    expires_delta: Optional[timedelta] = None
+) -> str:
+    """Generates a signed JWT refresh token."""
+    now = int(time.time())
+    if expires_delta:
+        expire = now + int(expires_delta.total_seconds())
+    elif remember_me:
+        expire = now + (30 * 24 * 3600)  # 30 days
+    else:
+        expire = now + (7 * 24 * 3600)   # 7 days
+
+    payload: Dict[str, Any] = {
+        "user_id": user_id,
+        "sub": str(user_id),
+        "type": "refresh",
+        "jti": secrets.token_hex(16),
+        "iat": now,
+        "exp": expire
+    }
+    if email:
+        payload["email"] = email
+
+    header = {"alg": "HS256", "typ": "JWT"}
     header_b64 = b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
     payload_b64 = b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
 

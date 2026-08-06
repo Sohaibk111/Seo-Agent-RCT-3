@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, update, insert
 
-from backend.database.models import User, Website, AuditResult, Lead, Report, KeywordResult, RankCheck, Job
+from backend.database.models import User, Website, AuditResult, Lead, Report, KeywordResult, RankCheck, Job, UserSession, PasswordResetToken, EmailVerificationToken, Organization, Membership, Invitation, OrganizationAuditEvent
 from backend.database.pagination import (
     paginate,
     async_paginate,
@@ -38,12 +38,603 @@ def create_user(db: Session, email: str, username: str, hashed_password: Optiona
     db.refresh(db_user)
     return db_user
 
-async def create_user_async(db: AsyncSession, email: str, username: str, hashed_password: Optional[str] = None) -> User:
-    db_user = User(email=email, username=username, hashed_password=hashed_password)
+async def create_user_async(db: AsyncSession, email: str, username: str, hashed_password: Optional[str] = None, is_verified: bool = False, timezone: str = "UTC", language: str = "en") -> User:
+    db_user = User(
+        email=email,
+        username=username,
+        hashed_password=hashed_password,
+        is_verified=is_verified,
+        timezone=timezone,
+        language=language
+    )
     db.add(db_user)
     await db.commit()
     await db.refresh(db_user)
     return db_user
+
+async def get_user_by_username_async(db: AsyncSession, username: str) -> Optional[User]:
+    stmt = select(User).where(User.username == username)
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def update_user_profile_async(
+    db: AsyncSession,
+    user: User,
+    username: Optional[str] = None,
+    email: Optional[str] = None,
+    timezone: Optional[str] = None,
+    language: Optional[str] = None,
+    notification_settings: Optional[dict] = None,
+    avatar_url: Optional[str] = None
+) -> User:
+    if username is not None:
+        user.username = username
+    if email is not None:
+        user.email = email
+    if timezone is not None:
+        user.timezone = timezone
+    if language is not None:
+        user.language = language
+    if notification_settings is not None:
+        user.notification_settings = notification_settings
+    if avatar_url is not None:
+        user.avatar_url = avatar_url
+
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+async def update_user_password_async(db: AsyncSession, user: User, hashed_password: str) -> User:
+    user.hashed_password = hashed_password
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+async def verify_user_email_async(db: AsyncSession, user: User) -> User:
+    user.is_verified = True
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+# --- SESSION CRUD ---
+async def create_session_async(
+    db: AsyncSession,
+    user_id: int,
+    session_token: str,
+    refresh_token: str,
+    expires_at: datetime,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    remember_me: bool = False
+) -> UserSession:
+    session = UserSession(
+        user_id=user_id,
+        session_token=session_token,
+        refresh_token=refresh_token,
+        expires_at=expires_at,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        remember_me=remember_me,
+        is_active=True
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+async def get_session_by_refresh_token_async(db: AsyncSession, refresh_token: str) -> Optional[UserSession]:
+    stmt = select(UserSession).where(
+        UserSession.refresh_token == refresh_token,
+        UserSession.is_active == True
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def get_session_by_token_async(db: AsyncSession, session_token: str) -> Optional[UserSession]:
+    stmt = select(UserSession).where(
+        UserSession.session_token == session_token,
+        UserSession.is_active == True
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def get_user_sessions_async(db: AsyncSession, user_id: int) -> List[UserSession]:
+    stmt = select(UserSession).where(
+        UserSession.user_id == user_id,
+        UserSession.is_active == True
+    ).order_by(UserSession.created_at.desc())
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+async def revoke_session_async(db: AsyncSession, session_id: int, user_id: int) -> bool:
+    stmt = select(UserSession).where(
+        UserSession.id == session_id,
+        UserSession.user_id == user_id
+    )
+    result = await db.execute(stmt)
+    session = result.scalars().first()
+    if session:
+        session.is_active = False
+        await db.commit()
+        return True
+    return False
+
+async def revoke_all_user_sessions_async(db: AsyncSession, user_id: int, except_session_id: Optional[int] = None) -> int:
+    stmt = update(UserSession).where(
+        UserSession.user_id == user_id,
+        UserSession.is_active == True
+    )
+    if except_session_id is not None:
+        stmt = stmt.where(UserSession.id != except_session_id)
+    stmt = stmt.values(is_active=False, updated_at=datetime.utcnow())
+    result = await db.execute(stmt)
+    await db.commit()
+    return result.rowcount
+
+
+# --- PASSWORD RESET TOKEN CRUD ---
+async def create_password_reset_token_async(
+    db: AsyncSession,
+    user_id: int,
+    token: str,
+    expires_at: datetime
+) -> PasswordResetToken:
+    reset_token = PasswordResetToken(
+        user_id=user_id,
+        token=token,
+        expires_at=expires_at,
+        is_used=False
+    )
+    db.add(reset_token)
+    await db.commit()
+    await db.refresh(reset_token)
+    return reset_token
+
+async def get_password_reset_token_async(db: AsyncSession, token: str) -> Optional[PasswordResetToken]:
+    stmt = select(PasswordResetToken).where(
+        PasswordResetToken.token == token,
+        PasswordResetToken.is_used == False,
+        PasswordResetToken.expires_at > datetime.utcnow()
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def mark_password_reset_token_used_async(db: AsyncSession, token_obj: PasswordResetToken) -> None:
+    token_obj.is_used = True
+    await db.commit()
+
+
+# --- EMAIL VERIFICATION TOKEN CRUD ---
+async def create_email_verification_token_async(
+    db: AsyncSession,
+    user_id: int,
+    token: str,
+    expires_at: datetime
+) -> EmailVerificationToken:
+    ver_token = EmailVerificationToken(
+        user_id=user_id,
+        token=token,
+        expires_at=expires_at,
+        is_used=False
+    )
+    db.add(ver_token)
+    await db.commit()
+    await db.refresh(ver_token)
+    return ver_token
+
+async def get_email_verification_token_async(db: AsyncSession, token: str) -> Optional[EmailVerificationToken]:
+    stmt = select(EmailVerificationToken).where(
+        EmailVerificationToken.token == token,
+        EmailVerificationToken.is_used == False,
+        EmailVerificationToken.expires_at > datetime.utcnow()
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def mark_email_verification_token_used_async(db: AsyncSession, token_obj: EmailVerificationToken) -> None:
+    token_obj.is_used = True
+    await db.commit()
+
+
+# --- ORGANIZATION & TEAMS CRUD ---
+
+ROLE_HIERARCHY = {
+    "Owner": 5,
+    "Admin": 4,
+    "Manager": 3,
+    "Member": 2,
+    "Viewer": 1
+}
+
+def check_role_permission(user_role: str, required_role: str) -> bool:
+    user_rank = ROLE_HIERARCHY.get(user_role, 0)
+    required_rank = ROLE_HIERARCHY.get(required_role, 99)
+    return user_rank >= required_rank
+
+
+async def create_org_audit_event_async(
+    db: AsyncSession,
+    org_id: int,
+    action: str,
+    actor_id: Optional[int] = None,
+    details: Optional[dict] = None,
+    ip_address: Optional[str] = None
+) -> OrganizationAuditEvent:
+    audit_event = OrganizationAuditEvent(
+        organization_id=org_id,
+        actor_id=actor_id,
+        action=action,
+        details=details or {},
+        ip_address=ip_address
+    )
+    db.add(audit_event)
+    await db.commit()
+    await db.refresh(audit_event)
+    return audit_event
+
+
+async def get_org_audit_events_async(
+    db: AsyncSession,
+    org_id: int,
+    limit: int = 50
+) -> List[OrganizationAuditEvent]:
+    stmt = (
+        select(OrganizationAuditEvent)
+        .options(joinedload(OrganizationAuditEvent.actor))
+        .where(OrganizationAuditEvent.organization_id == org_id)
+        .order_by(OrganizationAuditEvent.created_at.desc())
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def create_organization_async(
+    db: AsyncSession,
+    name: str,
+    slug: str,
+    creator_user_id: int,
+    logo_url: Optional[str] = None,
+    primary_color: Optional[str] = None,
+    settings: Optional[dict] = None
+) -> Organization:
+    org = Organization(
+        name=name,
+        slug=slug,
+        logo_url=logo_url,
+        primary_color=primary_color,
+        settings=settings or {}
+    )
+    db.add(org)
+    await db.commit()
+    await db.refresh(org)
+
+    # Automatically add creator as Owner
+    owner_membership = Membership(
+        organization_id=org.id,
+        user_id=creator_user_id,
+        role="Owner"
+    )
+    db.add(owner_membership)
+    await db.commit()
+
+    # Log audit event
+    await create_org_audit_event_async(
+        db,
+        org_id=org.id,
+        action="organization.created",
+        actor_id=creator_user_id,
+        details={"name": name, "slug": slug}
+    )
+
+    return org
+
+
+async def get_organization_async(db: AsyncSession, org_id: int) -> Optional[Organization]:
+    stmt = select(Organization).where(Organization.id == org_id)
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+
+async def get_organization_by_slug_async(db: AsyncSession, slug: str) -> Optional[Organization]:
+    stmt = select(Organization).where(Organization.slug == slug)
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+
+async def get_user_organizations_async(db: AsyncSession, user_id: int) -> List[Organization]:
+    stmt = (
+        select(Organization)
+        .join(Membership, Membership.organization_id == Organization.id)
+        .where(Membership.user_id == user_id)
+        .order_by(Organization.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def update_organization_async(
+    db: AsyncSession,
+    org: Organization,
+    name: Optional[str] = None,
+    slug: Optional[str] = None,
+    logo_url: Optional[str] = None,
+    primary_color: Optional[str] = None,
+    settings: Optional[dict] = None,
+    actor_id: Optional[int] = None
+) -> Organization:
+    changes = {}
+    if name is not None:
+        changes["name"] = {"old": org.name, "new": name}
+        org.name = name
+    if slug is not None:
+        changes["slug"] = {"old": org.slug, "new": slug}
+        org.slug = slug
+    if logo_url is not None:
+        changes["logo_url"] = logo_url
+        org.logo_url = logo_url
+    if primary_color is not None:
+        changes["primary_color"] = primary_color
+        org.primary_color = primary_color
+    if settings is not None:
+        changes["settings"] = settings
+        org.settings = settings
+
+    org.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(org)
+
+    await create_org_audit_event_async(
+        db,
+        org_id=org.id,
+        action="organization.updated",
+        actor_id=actor_id,
+        details=changes
+    )
+
+    return org
+
+
+async def delete_organization_async(db: AsyncSession, org: Organization, actor_id: Optional[int] = None) -> None:
+    await create_org_audit_event_async(
+        db,
+        org_id=org.id,
+        action="organization.deleted",
+        actor_id=actor_id,
+        details={"name": org.name, "slug": org.slug}
+    )
+    await db.delete(org)
+    await db.commit()
+
+
+# --- MEMBERSHIP CRUD ---
+
+async def get_membership_async(db: AsyncSession, org_id: int, user_id: int) -> Optional[Membership]:
+    stmt = select(Membership).where(
+        Membership.organization_id == org_id,
+        Membership.user_id == user_id
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+
+async def get_org_members_async(db: AsyncSession, org_id: int) -> List[Membership]:
+    stmt = (
+        select(Membership)
+        .options(joinedload(Membership.user))
+        .where(Membership.organization_id == org_id)
+        .order_by(Membership.created_at.asc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def update_member_role_async(
+    db: AsyncSession,
+    org_id: int,
+    user_id: int,
+    new_role: str,
+    actor_id: Optional[int] = None
+) -> Optional[Membership]:
+    membership = await get_membership_async(db, org_id, user_id)
+    if not membership:
+        return None
+
+    old_role = membership.role
+    membership.role = new_role
+    membership.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(membership)
+
+    await create_org_audit_event_async(
+        db,
+        org_id=org_id,
+        action="member.role_updated",
+        actor_id=actor_id,
+        details={"target_user_id": user_id, "old_role": old_role, "new_role": new_role}
+    )
+
+    return membership
+
+
+async def remove_org_member_async(
+    db: AsyncSession,
+    org_id: int,
+    user_id: int,
+    actor_id: Optional[int] = None
+) -> bool:
+    membership = await get_membership_async(db, org_id, user_id)
+    if not membership:
+        return False
+
+    await db.delete(membership)
+    await db.commit()
+
+    await create_org_audit_event_async(
+        db,
+        org_id=org_id,
+        action="member.removed",
+        actor_id=actor_id,
+        details={"target_user_id": user_id, "removed_role": membership.role}
+    )
+
+    return True
+
+
+async def transfer_org_ownership_async(
+    db: AsyncSession,
+    org_id: int,
+    current_owner_id: int,
+    new_owner_id: int
+) -> bool:
+    current_owner_mem = await get_membership_async(db, org_id, current_owner_id)
+    new_owner_mem = await get_membership_async(db, org_id, new_owner_id)
+
+    if not current_owner_mem or current_owner_mem.role != "Owner":
+        return False
+    if not new_owner_mem:
+        return False
+
+    current_owner_mem.role = "Admin"
+    new_owner_mem.role = "Owner"
+    current_owner_mem.updated_at = datetime.utcnow()
+    new_owner_mem.updated_at = datetime.utcnow()
+
+    await db.commit()
+
+    await create_org_audit_event_async(
+        db,
+        org_id=org_id,
+        action="ownership.transferred",
+        actor_id=current_owner_id,
+        details={"previous_owner_id": current_owner_id, "new_owner_id": new_owner_id}
+    )
+
+    return True
+
+
+# --- INVITATION CRUD ---
+
+async def create_invitation_async(
+    db: AsyncSession,
+    org_id: int,
+    email: str,
+    role: str,
+    token: str,
+    invited_by_id: int,
+    expires_at: datetime
+) -> Invitation:
+    invitation = Invitation(
+        organization_id=org_id,
+        email=email.lower().strip(),
+        role=role,
+        token=token,
+        status="pending",
+        invited_by_id=invited_by_id,
+        expires_at=expires_at
+    )
+    db.add(invitation)
+    await db.commit()
+    await db.refresh(invitation)
+
+    await create_org_audit_event_async(
+        db,
+        org_id=org_id,
+        action="member.invited",
+        actor_id=invited_by_id,
+        details={"email": email, "role": role}
+    )
+
+    return invitation
+
+
+async def get_invitation_by_token_async(db: AsyncSession, token: str) -> Optional[Invitation]:
+    stmt = select(Invitation).where(
+        Invitation.token == token,
+        Invitation.status == "pending",
+        Invitation.expires_at > datetime.utcnow()
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+
+async def get_org_invitations_async(db: AsyncSession, org_id: int) -> List[Invitation]:
+    stmt = select(Invitation).where(
+        Invitation.organization_id == org_id,
+        Invitation.status == "pending"
+    ).order_by(Invitation.created_at.desc())
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def accept_invitation_async(
+    db: AsyncSession,
+    invitation: Invitation,
+    user: User
+) -> Membership:
+    invitation.status = "accepted"
+
+    existing = await get_membership_async(db, invitation.organization_id, user.id)
+    if existing:
+        existing.role = invitation.role
+        membership = existing
+    else:
+        membership = Membership(
+            organization_id=invitation.organization_id,
+            user_id=user.id,
+            role=invitation.role
+        )
+        db.add(membership)
+
+    await db.commit()
+    await db.refresh(membership)
+
+    await create_org_audit_event_async(
+        db,
+        org_id=invitation.organization_id,
+        action="invitation.accepted",
+        actor_id=user.id,
+        details={"email": user.email, "role": invitation.role}
+    )
+
+    return membership
+
+
+async def reject_invitation_async(
+    db: AsyncSession,
+    invitation: Invitation,
+    user: User
+) -> None:
+    invitation.status = "rejected"
+    await db.commit()
+
+    await create_org_audit_event_async(
+        db,
+        org_id=invitation.organization_id,
+        action="invitation.rejected",
+        actor_id=user.id,
+        details={"email": user.email}
+    )
+
+
+async def cancel_invitation_async(
+    db: AsyncSession,
+    invitation: Invitation,
+    actor_id: Optional[int] = None
+) -> None:
+    invitation.status = "cancelled"
+    await db.commit()
+
+    await create_org_audit_event_async(
+        db,
+        org_id=invitation.organization_id,
+        action="invitation.cancelled",
+        actor_id=actor_id,
+        details={"email": invitation.email}
+    )
+
+
 
 
 # --- WEBSITE CRUD (STRICTLY TENANT ISOLATED) ---

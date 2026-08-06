@@ -23,6 +23,7 @@ from backend.services.metrics_service import MetricsService
 from backend.services.rank_service import RankService
 from backend.services.scraper_service import ScraperService
 from backend.services.job_service import JobService
+from backend.services.audit_service import log_audit_event_async
 from backend.rate_limiter import rate_limit_guard
 from backend.queue import job_queue
 
@@ -33,9 +34,17 @@ router = APIRouter()
 async def create_website(website_in: schemas.WebsiteCreate, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_async_db)):
     """Create a new website owned by the current user."""
     clean_domain = website_in.domain or website_in.url.replace("https://", "").replace("http://", "").split("/")[0].lower()
-    return await crud.create_website_async(
+    website = await crud.create_website_async(
         db, user_id=current_user.id, url=website_in.url, domain=clean_domain, company_name=website_in.company_name
     )
+    await log_audit_event_async(
+        db=db,
+        action="project.created",
+        user_id=current_user.id,
+        target_resource=f"project:{website.id}",
+        details={"url": website.url, "domain": website.domain}
+    )
+    return website
 
 @router.get("/websites", response_model=List[schemas.WebsiteOut])
 async def list_websites(
@@ -61,6 +70,13 @@ async def get_website(id: int, current_user: User = Depends(get_current_user), d
 async def delete_website(id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_async_db)):
     """Delete a website owned by the user along with associated audits, leads, and reports asynchronously."""
     website = await verify_website_ownership_async(id, current_user.id, db)
+    await log_audit_event_async(
+        db=db,
+        action="project.deleted",
+        user_id=current_user.id,
+        target_resource=f"project:{id}",
+        details={"domain": website.domain, "url": website.url}
+    )
     await crud.delete_website_instance_async(db, website)
     return {"message": "Website deleted successfully", "id": id}
 

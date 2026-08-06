@@ -7,6 +7,8 @@ from fastapi.exceptions import RequestValidationError, HTTPException
 from backend.config import settings
 from backend.database.database import engine, Base
 from backend.api.auth_routes import router as auth_router
+from backend.api.org_routes import router as org_router
+from backend.api.audit_routes import router as audit_router
 from backend.api.routes import router as api_router
 from backend.exceptions import SEOAgentException
 from backend.logging_config import logger, RequestLoggingMiddleware
@@ -301,6 +303,8 @@ def prometheus_metrics():
     return Response(content=metrics_registry.generate_prometheus_text(), media_type="text/plain; version=0.0.4")
 
 app.include_router(auth_router, prefix=settings.API_V1_STR)
+app.include_router(org_router, prefix=settings.API_V1_STR)
+app.include_router(audit_router, prefix=settings.API_V1_STR)
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 

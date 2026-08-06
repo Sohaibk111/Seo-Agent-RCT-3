@@ -3,6 +3,7 @@ from typing import Optional, List, Any
 from datetime import datetime
 from urllib.parse import urlparse
 import re
+from enum import Enum
 
 # Helper functions for validation
 def validate_url_str(v: Optional[str]) -> Optional[str]:
@@ -51,23 +52,211 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: Optional[str] = Field(None, min_length=6, max_length=128)
+    remember_me: Optional[bool] = False
+
+class UserLogin(BaseModel):
+    email: Optional[EmailStr] = None
+    username: Optional[str] = None
+    password: Optional[str] = Field(None, min_length=1, max_length=128)
+
+
+class APIKeyCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="Friendly name for the API key")
+
+
+class APIKeyOut(BaseModel):
+    id: str
+    name: str
+    api_key: str
+    created_at: datetime
+
+    remember_me: Optional[bool] = False
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = Field(None, min_length=2, max_length=50)
+    email: Optional[EmailStr] = None
+    timezone: Optional[str] = None
+    language: Optional[str] = None
+    notification_settings: Optional[dict] = None
+    avatar_url: Optional[str] = None
 
 class UserOut(UserBase):
     id: int
     role: str
+    is_verified: bool = False
+    avatar_url: Optional[str] = None
+    timezone: str = "UTC"
+    language: str = "en"
+    notification_settings: Optional[dict] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
 
-# Token Schemas
+# SaaS Auth Schemas
 class Token(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+class EmailVerificationRequest(BaseModel):
+    email: Optional[EmailStr] = None
+
+class EmailVerificationConfirm(BaseModel):
+    token: str
+
+class AvatarUpdate(BaseModel):
+    avatar_url: str
+
+class SessionOut(BaseModel):
+    id: int
+    user_id: int
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    is_active: bool
+    remember_me: bool
+    created_at: datetime
+    expires_at: datetime
+
+    class Config:
+        from_attributes = True
 
 class TokenData(BaseModel):
     user_id: Optional[int] = None
     email: Optional[str] = None
+
+
+# Organization & Team Schemas
+class OrganizationRole(str, Enum):
+    OWNER = "Owner"
+    ADMIN = "Admin"
+    MANAGER = "Manager"
+    MEMBER = "Member"
+    VIEWER = "Viewer"
+
+
+class OrganizationCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    slug: Optional[str] = Field(None, min_length=1, max_length=100)
+    logo_url: Optional[str] = None
+    primary_color: Optional[str] = None
+    settings: Optional[dict] = None
+
+
+class OrganizationUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    slug: Optional[str] = Field(None, min_length=1, max_length=100)
+    logo_url: Optional[str] = None
+    primary_color: Optional[str] = None
+    settings: Optional[dict] = None
+
+
+class OrganizationOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+    logo_url: Optional[str] = None
+    primary_color: Optional[str] = None
+    settings: Optional[dict] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MembershipOut(BaseModel):
+    id: int
+    organization_id: int
+    user_id: int
+    role: str
+    created_at: datetime
+    updated_at: datetime
+    user: Optional[UserOut] = None
+
+    class Config:
+        from_attributes = True
+
+
+class MemberRoleUpdate(BaseModel):
+    role: str = Field(..., description="Role must be one of: Owner, Admin, Manager, Member, Viewer")
+
+
+class OwnershipTransfer(BaseModel):
+    new_owner_user_id: int
+
+
+class InvitationCreate(BaseModel):
+    email: EmailStr
+    role: str = Field("Member", description="Role: Owner, Admin, Manager, Member, Viewer")
+
+
+class InvitationOut(BaseModel):
+    id: int
+    organization_id: int
+    email: str
+    role: str
+    status: str
+    token: str
+    expires_at: datetime
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class InvitationConfirm(BaseModel):
+    token: str
+
+
+class OrganizationAuditEventOut(BaseModel):
+    id: int
+    organization_id: int
+    actor_id: Optional[int] = None
+    action: str
+    details: Optional[dict] = None
+    ip_address: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    organization_id: Optional[int] = None
+    action: str
+    target_resource: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    details: Optional[dict] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AuditLogPaginated(BaseModel):
+    items: List[AuditLogOut]
+    total: int
+    page: int
+    size: int
+    total_pages: int
+
+
 
 # Website Schemas
 class WebsiteBase(BaseModel):
