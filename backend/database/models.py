@@ -1,0 +1,181 @@
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON, Index
+from sqlalchemy.orm import relationship
+from backend.database.database import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    username = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=True)
+    role = Column(String, default="user")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    websites = relationship("Website", back_populates="owner", cascade="all, delete-orphan")
+    audits = relationship("AuditResult", back_populates="owner", cascade="all, delete-orphan")
+    leads = relationship("Lead", back_populates="owner", cascade="all, delete-orphan")
+    reports = relationship("Report", back_populates="owner", cascade="all, delete-orphan")
+    keywords = relationship("KeywordResult", back_populates="owner", cascade="all, delete-orphan")
+    rank_checks = relationship("RankCheck", back_populates="owner", cascade="all, delete-orphan")
+    jobs = relationship("Job", back_populates="owner", cascade="all, delete-orphan")
+
+
+class Website(Base):
+    __tablename__ = "websites"
+    __table_args__ = (
+        Index("ix_websites_user_domain", "user_id", "domain"),
+        Index("ix_websites_user_created", "user_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    url = Column(String, nullable=False)
+    domain = Column(String, index=True, nullable=False)
+    company_name = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    owner = relationship("User", back_populates="websites")
+    audits = relationship("AuditResult", back_populates="website", cascade="all, delete-orphan")
+    leads = relationship("Lead", back_populates="website", cascade="all, delete-orphan")
+    reports = relationship("Report", back_populates="website", cascade="all, delete-orphan")
+    jobs = relationship("Job", back_populates="website", cascade="all, delete-orphan")
+
+
+class AuditResult(Base):
+    __tablename__ = "audit_results"
+    __table_args__ = (
+        Index("ix_audit_results_user_website", "user_id", "website_id"),
+        Index("ix_audit_results_website_user_created", "website_id", "user_id", "created_at"),
+        Index("ix_audit_results_website_user_score", "website_id", "user_id", "score"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    website_id = Column(Integer, ForeignKey("websites.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    score = Column(Integer, nullable=False, default=100)
+    title = Column(String, nullable=True)
+    title_length = Column(Integer, nullable=True)
+    meta_description = Column(Text, nullable=True)
+    meta_description_length = Column(Integer, nullable=True)
+    h1_tags = Column(JSON, default=list)
+    canonical_url = Column(String, nullable=True)
+    viewport = Column(String, nullable=True)
+    images_count = Column(Integer, default=0)
+    images_without_alt = Column(Integer, default=0)
+    has_structured_data = Column(Boolean, default=False)
+    has_sitemap = Column(Boolean, default=False)
+    has_robots_txt = Column(Boolean, default=False)
+    broken_links_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    website = relationship("Website", back_populates="audits")
+    owner = relationship("User", back_populates="audits")
+
+
+class Lead(Base):
+    __tablename__ = "leads"
+    __table_args__ = (
+        Index("ix_leads_user_website", "user_id", "website_id"),
+        Index("ix_leads_website_user_source", "website_id", "user_id", "source"),
+        Index("ix_leads_website_user_created", "website_id", "user_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    website_id = Column(Integer, ForeignKey("websites.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String, nullable=False)
+    phone = Column(String, nullable=True)
+    source = Column(String, default="audit")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    website = relationship("Website", back_populates="leads")
+    owner = relationship("User", back_populates="leads")
+
+
+class Report(Base):
+    __tablename__ = "reports"
+    __table_args__ = (
+        Index("ix_reports_user_website", "user_id", "website_id"),
+        Index("ix_reports_website_user_format", "website_id", "user_id", "format"),
+        Index("ix_reports_website_user_created", "website_id", "user_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    website_id = Column(Integer, ForeignKey("websites.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String, nullable=False)
+    format = Column(String, default="pdf")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    website = relationship("Website", back_populates="reports")
+    owner = relationship("User", back_populates="reports")
+
+
+class KeywordResult(Base):
+    __tablename__ = "keyword_results"
+    __table_args__ = (
+        Index("ix_keyword_results_user_seed", "user_id", "seed_keyword"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    seed_keyword = Column(String, nullable=False, index=True)
+    keyword = Column(String, nullable=False)
+    intent = Column(String, default="Informational")
+    volume = Column(Integer, default=0)
+    kd = Column(Integer, default=0)
+    cpc = Column(Text, default="0.00")
+    cluster = Column(String, default="General")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    owner = relationship("User", back_populates="keywords")
+
+
+class RankCheck(Base):
+    __tablename__ = "rank_checks"
+    __table_args__ = (
+        Index("ix_rank_checks_user_domain", "user_id", "domain"),
+        Index("ix_rank_checks_user_website", "user_id", "website_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    website_id = Column(Integer, ForeignKey("websites.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    keyword = Column(String, nullable=False)
+    domain = Column(String, nullable=False)
+    position = Column(Integer, nullable=False)
+    checked_results = Column(Integer, default=30)
+    source = Column(String, default="free_tracker")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    owner = relationship("User", back_populates="rank_checks")
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_user_status", "user_id", "status"),
+        Index("ix_jobs_user_type", "user_id", "job_type"),
+        Index("ix_jobs_user_created", "user_id", "created_at"),
+        Index("ix_jobs_status_updated", "status", "updated_at"),
+        Index("ix_jobs_user_updated", "user_id", "updated_at"),
+        Index("ix_jobs_user_website", "user_id", "website_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    website_id = Column(Integer, ForeignKey("websites.id", ondelete="CASCADE"), nullable=True, index=True)
+    job_type = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="pending", index=True)
+    progress = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    error_message = Column(Text, nullable=True)
+    result_reference = Column(JSON, nullable=True)
+
+    owner = relationship("User", back_populates="jobs")
+    website = relationship("Website", back_populates="jobs")

@@ -1,0 +1,92 @@
+groups:
+  - name: seo_agent_alerts
+    rules:
+      - alert: WorkerOffline
+        expr: worker_active == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SEO Agent Background Worker is offline"
+          description: "No active background worker heartbeats recorded in the last minute."
+
+      - alert: RedisUnavailable
+        expr: redis_latency > 5 or rate(redis_errors_total[2m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis Service Unavailable or High Latency"
+          description: "Redis latency exceeds 5 seconds or connection errors detected."
+
+      - alert: DatabaseUnavailable
+        expr: database_latency > 5
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database Connection Failure or Severe Degradation"
+          description: "Database query latency exceeds 5 seconds or database probes are failing."
+
+      - alert: QueueBacklog
+        expr: worker_queue_size > 50 or queue_length > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Background Worker Queue Backlog"
+          description: "Background job queue depth exceeds 50 items for more than 5 minutes."
+
+      - alert: HighRequestLatency
+        expr: rate(seo_request_duration_seconds_sum[5m]) / rate(seo_request_duration_seconds_count[5m]) > 2.0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API Request Latency"
+          description: "Average API request latency is greater than 2.0 seconds over a 5-minute window."
+
+      - alert: HighMemoryUsage
+        expr: worker_memory_usage > 90
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker Memory Usage High"
+          description: "Worker process memory utilization exceeds 90%."
+
+      - alert: HighCPUUsage
+        expr: worker_cpu_usage > 90
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker CPU Utilization High"
+          description: "Worker process CPU utilization exceeds 90%."
+
+      - alert: HighAPIErrorRate
+        expr: rate(request_count{status_code=~"5.."}[5m]) / rate(seo_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP 5xx Error Rate"
+          description: "HTTP 5xx error rate exceeds 5% over 5 minutes."
+
+      - alert: TooManyJobRetries
+        expr: rate(retry_attempts[5m]) > 5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Excessive Job Execution Retries"
+          description: "Job retries rate exceeds 5 per minute."
+
+      - alert: DeadLetterQueueGrowth
+        expr: dead_letter_jobs > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dead Letter Queue Growth Detected"
+          description: "Failed background jobs have entered the Dead Letter Queue."

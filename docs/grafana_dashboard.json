@@ -1,0 +1,187 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "API Request Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(seo_request_duration_seconds_sum[5m]) / rate(seo_request_duration_seconds_count[5m])",
+          "legendFormat": "Avg Latency (s)"
+        }
+      ]
+    },
+    {
+      "title": "HTTP Error Rate & 429 Rate Limiting",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(request_count{status_code=~"5.."}[5m]))",
+          "legendFormat": "5xx Error Rate"
+        },
+        {
+          "expr": "sum(rate(request_count{status_code="429"}[5m]))",
+          "legendFormat": "429 Rate Limited"
+        }
+      ]
+    },
+    {
+      "title": "Worker Queue Size & Pending Jobs",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "worker_queue_size",
+          "legendFormat": "Queue Length"
+        },
+        {
+          "expr": "active_jobs",
+          "legendFormat": "Active Executing Jobs"
+        }
+      ]
+    },
+    {
+      "title": "Job Success Rate & Failure Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(successful_jobs[5m])",
+          "legendFormat": "Successful Jobs/sec"
+        },
+        {
+          "expr": "rate(failed_jobs[5m])",
+          "legendFormat": "Failed Jobs/sec"
+        },
+        {
+          "expr": "dead_letter_jobs",
+          "legendFormat": "Dead Letter Queue"
+        }
+      ]
+    },
+    {
+      "title": "Active Workers & Status",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "targets": [
+        {
+          "expr": "worker_active",
+          "legendFormat": "Worker Active State"
+        },
+        {
+          "expr": "worker_jobs_running",
+          "legendFormat": "Running Job Threads"
+        }
+      ]
+    },
+    {
+      "title": "Database Query Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "database_latency",
+          "legendFormat": "Database Latency (s)"
+        }
+      ]
+    },
+    {
+      "title": "Redis Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "redis_latency",
+          "legendFormat": "Redis Latency (s)"
+        }
+      ]
+    },
+    {
+      "title": "Cache Hit & Miss Ratio",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "cache_hit_ratio",
+          "legendFormat": "Hit Ratio"
+        },
+        {
+          "expr": "cache_miss_ratio",
+          "legendFormat": "Miss Ratio"
+        }
+      ]
+    },
+    {
+      "title": "Worker CPU & Memory Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "expr": "worker_cpu_usage",
+          "legendFormat": "CPU Usage (%)"
+        },
+        {
+          "expr": "worker_memory_usage",
+          "legendFormat": "Memory Usage (MB)"
+        }
+      ]
+    },
+    {
+      "title": "Crawler Duration",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
+      "targets": [
+        {
+          "expr": "rate(crawl_duration_sum[5m]) / rate(crawl_duration_count[5m])",
+          "legendFormat": "Avg Crawl Duration (s)"
+        }
+      ]
+    },
+    {
+      "title": "Audit Duration",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
+      "targets": [
+        {
+          "expr": "rate(audit_duration_sum[5m]) / rate(audit_duration_count[5m])",
+          "legendFormat": "Avg Audit Duration (s)"
+        }
+      ]
+    },
+    {
+      "title": "Gemini AI Request Duration",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
+      "targets": [
+        {
+          "expr": "rate(ai_duration_sum[5m]) / rate(ai_duration_count[5m])",
+          "legendFormat": "Avg AI Duration (s)"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["seo-agent", "monitoring", "production"],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m"]
+  },
+  "timezone": "browser",
+  "title": "SEO Agent Enterprise Observability Dashboard",
+  "uid": "seo-agent-observability-v1"
+}

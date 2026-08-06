@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  SEO Agent theme -- warm charcoal/cream surfaces with an amber accent,
+  replacing the default slate/blue Tailwind palette. Every component
+  keeps using its existing bg-slate-*, text-white, bg-blue-*, bg-cyan-*,
+  bg-emerald-*, bg-indigo-*, bg-orange-*, bg-amber-*, bg-rose-* classes
+  unchanged -- this file overrides what those tokens resolve to, so the
+  whole app re-themes (including dark/light mode) without touching JSX.
+
+  Surfaces, borders, and primary text are mode-aware (defined once here,
+  flipped via .dark). Accent hues are mostly static across modes (solid
+  fills read fine on both light and dark pages); the handful of accent
+  colors used as small inline TEXT labels get their own light/dark pair
+  so they stay legible against both page backgrounds.
+*/
+:root {
+  --surface-0: #F1EFE8;
+  --surface-1: #FDFCF9;
+  --surface-2: #E5E3DB;
+  --border-c: #D3D1C7;
+  --border-strong-c: #C7C5BB;
+  --text-primary-c: #232220;
+  --text-secondary-c: #5F5E5A;
+  --text-muted-c: #8B8A82;
+
+  --accent-text: #9A5F0C;
+  --info-text: #0F6E56;
+  --danger-text: #A32D2D;
+}
+
+.dark {
+  --surface-0: #141412;
+  --surface-1: #1E1D1A;
+  --surface-2: #2A2925;
+  --border-c: #3A3934;
+  --border-strong-c: #4A4943;
+  --text-primary-c: #F4F2EC;
+  --text-secondary-c: #B4B2A9;
+  --text-muted-c: #75746D;
+
+  --accent-text: #F5B860;
+  --info-text: #6FD9B8;
+  --danger-text: #EF8B8B;
+}
+
+@theme {
+  /* Surfaces + text -- mode-aware */
+  --color-slate-950: var(--surface-0);
+  --color-slate-900: var(--surface-1);
+  --color-slate-800: var(--surface-2);
+  --color-slate-700: var(--border-c);
+  --color-slate-500: var(--text-muted-c);
+  --color-slate-400: var(--text-secondary-c);
+  --color-slate-300: var(--text-secondary-c);
+  --color-slate-200: var(--text-primary-c);
+  --color-slate-100: var(--text-primary-c);
+  --color-white: var(--text-primary-c);
+
+  /* Brand accent (was blue/indigo) -- warm amber, replaces the generic
+     blue-on-navy default every AI-generated dashboard reaches for */
+  --color-blue-500: #C17817;
+  --color-blue-600: #A8630F;
+  --color-indigo-400: var(--accent-text);
+  --color-indigo-500: #C17817;
+  --color-indigo-600: #A8630F;
+  --color-indigo-950: var(--surface-0);
+  --color-amber-300: var(--accent-text);
+  --color-amber-400: #D9932E;
+  --color-amber-500: #C17817;
+
+  /* Secondary accent / info (was cyan) -- teal */
+  --color-cyan-300: var(--info-text);
+  --color-cyan-400: #2FA98A;
+  --color-cyan-500: #14876A;
+  --color-cyan-600: #0F6E56;
+
+  /* Success (was emerald) -- green */
+  --color-emerald-400: #7EB84A;
+  --color-emerald-500: #5B8A22;
+
+  /* Warning / attention (was orange) -- coral */
+  --color-orange-500: #C25A26;
+  --color-orange-600: #A84A1C;
+
+  /* Danger (was rose) -- red */
+  --color-rose-400: var(--danger-text);
+  --color-rose-500: #C23D3D;
+}
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+}
