@@ -4,7 +4,11 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, update, insert
 
-from backend.database.models import User, Website, AuditResult, Lead, Report, KeywordResult, RankCheck, Job, UserSession, PasswordResetToken, EmailVerificationToken, Organization, Membership, Invitation, OrganizationAuditEvent
+from backend.database.models import (
+    User, Website, AuditResult, Lead, Report, KeywordResult, RankCheck, Job,
+    UserSession, PasswordResetToken, EmailVerificationToken, Organization,
+    Membership, Invitation, OrganizationAuditEvent, PasswordHistory, UsedRefreshToken, SecurityEvent
+)
 from backend.database.pagination import (
     paginate,
     async_paginate,
@@ -96,6 +100,159 @@ async def verify_user_email_async(db: AsyncSession, user: User) -> User:
     await db.refresh(user)
     return user
 
+def is_account_locked(user: User) -> Tuple[bool, int]:
+    """Checks if the user account is locked due to excessive failed login attempts."""
+    if not user.locked_until:
+        return False, 0
+    now = datetime.utcnow()
+    if user.locked_until > now:
+        remaining_seconds = int((user.locked_until - now).total_seconds())
+        return True, max(1, remaining_seconds)
+    return False, 0
+
+async def record_login_failure_async(
+    db: AsyncSession,
+    user: User,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None
+) -> Tuple[bool, int, int]:
+    """
+    Increments failed login attempts and sets lockout if threshold is exceeded.
+    Returns: (is_locked, remaining_attempts, lockout_seconds)
+    """
+    from backend.auth.security import LOCKOUT_THRESHOLD, LOCKOUT_DURATION_MINUTES
+    user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+    locked = False
+    lockout_seconds = 0
+
+    if user.failed_login_attempts >= LOCKOUT_THRESHOLD:
+        user.locked_until = datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+        locked = True
+        lockout_seconds = LOCKOUT_DURATION_MINUTES * 60
+
+    await db.commit()
+    await db.refresh(user)
+
+    remaining_attempts = max(0, LOCKOUT_THRESHOLD - user.failed_login_attempts)
+    return locked, remaining_attempts, lockout_seconds
+
+async def record_login_success_async(
+    db: AsyncSession,
+    user: User,
+    ip_address: Optional[str] = None
+) -> None:
+    """Resets failed login attempts and updates last login metadata."""
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    user.last_login_at = datetime.utcnow()
+    if ip_address:
+        user.last_login_ip = ip_address
+    await db.commit()
+    await db.refresh(user)
+
+
+# --- PASSWORD HISTORY CRUD ---
+async def add_password_history_async(db: AsyncSession, user_id: int, hashed_password: str) -> PasswordHistory:
+    history = PasswordHistory(
+        user_id=user_id,
+        hashed_password=hashed_password,
+        created_at=datetime.utcnow()
+    )
+    db.add(history)
+    await db.commit()
+    await db.refresh(history)
+    return history
+
+async def check_password_history_async(db: AsyncSession, user_id: int, plain_password: str, max_history: int = 5) -> bool:
+    """
+    Returns True if the proposed plain password matches ANY of the user's last N recorded passwords.
+    """
+    from backend.auth.security import verify_password
+    stmt = select(PasswordHistory).where(
+        PasswordHistory.user_id == user_id
+    ).order_by(PasswordHistory.created_at.desc()).limit(max_history)
+    result = await db.execute(stmt)
+    histories = result.scalars().all()
+    for h in histories:
+        if verify_password(plain_password, h.hashed_password):
+            return True
+    return False
+
+
+# --- REFRESH TOKEN ROTATION & REUSE TRACKING ---
+async def register_used_refresh_token_async(
+    db: AsyncSession,
+    user_id: int,
+    refresh_token_str: str,
+    session_id: Optional[int] = None
+) -> UsedRefreshToken:
+    from backend.auth.security import hash_token
+    token_hash = hash_token(refresh_token_str)
+    used_token = UsedRefreshToken(
+        user_id=user_id,
+        session_id=session_id,
+        token_hash=token_hash,
+        revoked_at=datetime.utcnow(),
+        created_at=datetime.utcnow()
+    )
+    db.add(used_token)
+    await db.commit()
+    return used_token
+
+async def is_refresh_token_reused_async(db: AsyncSession, refresh_token_str: str) -> Tuple[bool, Optional[int]]:
+    """
+    Checks if a refresh token was previously used/rotated.
+    Returns: (is_reused, user_id)
+    """
+    from backend.auth.security import hash_token
+    token_hash = hash_token(refresh_token_str)
+    stmt = select(UsedRefreshToken).where(UsedRefreshToken.token_hash == token_hash)
+    result = await db.execute(stmt)
+    entry = result.scalars().first()
+    if entry:
+        return True, entry.user_id
+    return False, None
+
+
+# --- SECURITY EVENTS AUDIT CRUD ---
+async def create_security_event_async(
+    db: AsyncSession,
+    event_type: str,
+    user_id: Optional[int] = None,
+    status: str = "info",
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    device_info: Optional[str] = None,
+    details: Optional[dict] = None
+) -> SecurityEvent:
+    event = SecurityEvent(
+        user_id=user_id,
+        event_type=event_type,
+        status=status,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        device_info=device_info,
+        details=details or {},
+        created_at=datetime.utcnow()
+    )
+    db.add(event)
+    await db.commit()
+    await db.refresh(event)
+    return event
+
+async def get_security_events_async(
+    db: AsyncSession,
+    user_id: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0
+) -> List[SecurityEvent]:
+    stmt = select(SecurityEvent)
+    if user_id is not None:
+        stmt = stmt.where(SecurityEvent.user_id == user_id)
+    stmt = stmt.order_by(SecurityEvent.created_at.desc()).offset(offset).limit(limit)
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
 
 # --- SESSION CRUD ---
 async def create_session_async(
@@ -106,6 +263,8 @@ async def create_session_async(
     expires_at: datetime,
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
+    device_name: Optional[str] = None,
+    device_type: Optional[str] = None,
     remember_me: bool = False
 ) -> UserSession:
     session = UserSession(
@@ -114,14 +273,24 @@ async def create_session_async(
         refresh_token=refresh_token,
         expires_at=expires_at,
         ip_address=ip_address,
+        last_ip=ip_address,
         user_agent=user_agent,
+        device_name=device_name,
+        device_type=device_type,
         remember_me=remember_me,
+        last_active_at=datetime.utcnow(),
         is_active=True
     )
     db.add(session)
     await db.commit()
     await db.refresh(session)
     return session
+
+async def touch_session_activity_async(db: AsyncSession, session: UserSession, ip_address: Optional[str] = None) -> None:
+    session.last_active_at = datetime.utcnow()
+    if ip_address:
+        session.last_ip = ip_address
+    await db.commit()
 
 async def get_session_by_refresh_token_async(db: AsyncSession, refresh_token: str) -> Optional[UserSession]:
     stmt = select(UserSession).where(

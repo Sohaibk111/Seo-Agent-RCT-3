@@ -39,3 +39,11 @@ async def get_current_admin_user(
     if role not in ("admin", "superuser") and current_user.id != 1:
         raise ForbiddenException(message="Forbidden: Administrative privileges required")
     return current_user
+
+async def require_verified_email(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """Enforces that the current authenticated user has completed email verification."""
+    if not current_user.is_verified:
+        raise ForbiddenException(message="Email verification required to access this resource")
+    return current_user

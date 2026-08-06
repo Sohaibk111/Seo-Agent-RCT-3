@@ -4,9 +4,112 @@ import base64
 import json
 import time
 import secrets
+import re
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 from backend.config import settings
+
+# Security Configuration Constants
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_DURATION_MINUTES = 15
+MAX_PASSWORD_HISTORY = 5
+IDLE_SESSION_TIMEOUT_HOURS = 24
+
+COMMON_PASSWORDS = {
+    "password", "12345678", "123456789", "123456", "admin123", "qwerty123",
+    "letmein1", "welcome1", "iloveyou", "password123", "secret123"
+}
+
+def validate_password_strength(password: str) -> Tuple[bool, List[str]]:
+    """
+    Validates that a password satisfies enterprise complexity requirements:
+    - Minimum 8 characters
+    - At least 1 uppercase letter
+    - At least 1 lowercase letter
+    - At least 1 number
+    - At least 1 special character
+    - Not in known common passwords list
+    """
+    errors: List[str] = []
+    if not password or len(password) < 8:
+        errors.append("Password must be at least 8 characters long")
+    if not any(c.isupper() for c in password):
+        errors.append("Password must contain at least one uppercase letter")
+    if not any(c.islower() for c in password):
+        errors.append("Password must contain at least one lowercase letter")
+    if not any(c.isdigit() for c in password):
+        errors.append("Password must contain at least one numeric digit")
+    if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", password):
+        errors.append("Password must contain at least one special character")
+    if password.lower() in COMMON_PASSWORDS:
+        errors.append("Password is too common or easily guessable")
+    return (len(errors) == 0, errors)
+
+def calculate_progressive_delay(failed_attempts: int) -> float:
+    """
+    Calculates progressive login delay in seconds based on consecutive failed attempts.
+    Attempts:
+    1: 0.0s
+    2: 0.2s
+    3: 0.5s
+    4: 1.0s
+    5+: 2.0s
+    """
+    if failed_attempts <= 1:
+        return 0.0
+    elif failed_attempts == 2:
+        return 0.2
+    elif failed_attempts == 3:
+        return 0.5
+    elif failed_attempts == 4:
+        return 1.0
+    else:
+        return min(2.0, 0.5 * (2 ** (failed_attempts - 3)))
+
+def hash_token(token_str: str) -> str:
+    """Computes a SHA-256 hex digest for secure indexable storage of sensitive tokens."""
+    return hashlib.sha256(token_str.encode("utf-8")).hexdigest()
+
+def parse_device_info(user_agent: Optional[str]) -> Dict[str, str]:
+    """Extracts high-level device type, OS, and browser from a User-Agent string."""
+    if not user_agent:
+        return {"device_name": "Unknown Client", "device_type": "api"}
+
+    ua = user_agent.lower()
+    device_type = "desktop"
+    if "mobile" in ua or "android" in ua or "iphone" in ua:
+        device_type = "mobile"
+    elif "tablet" in ua or "ipad" in ua:
+        device_type = "tablet"
+    elif "curl" in ua or "postman" in ua or "python" in ua or "httpclient" in ua:
+        device_type = "api"
+
+    browser = "Unknown Browser"
+    if "edg" in ua:
+        browser = "Microsoft Edge"
+    elif "chrome" in ua and "safari" in ua:
+        browser = "Google Chrome"
+    elif "safari" in ua and "chrome" not in ua:
+        browser = "Apple Safari"
+    elif "firefox" in ua:
+        browser = "Mozilla Firefox"
+    elif "python-requests" in ua:
+        browser = "Python Requests"
+
+    os_name = "Unknown OS"
+    if "macintosh" in ua or "mac os" in ua:
+        os_name = "macOS"
+    elif "windows" in ua:
+        os_name = "Windows"
+    elif "linux" in ua:
+        os_name = "Linux"
+    elif "iphone" in ua or "ipad" in ua:
+        os_name = "iOS"
+    elif "android" in ua:
+        os_name = "Android"
+
+    device_name = f"{browser} on {os_name}" if browser != "Unknown Browser" else user_agent[:60]
+    return {"device_name": device_name, "device_type": device_type}
 
 def b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")

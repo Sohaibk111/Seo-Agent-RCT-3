@@ -37,6 +37,25 @@ def validate_keyword_str(v: str) -> str:
         raise ValueError("Keyword cannot be empty")
     return v.strip()
 
+def validate_password_strength_str(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    v = v.strip()
+    if len(v) < 8:
+        raise ValueError("Password must be at least 8 characters long")
+    if not any(c.isupper() for c in v):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not any(c.islower() for c in v):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not any(c.isdigit() for c in v):
+        raise ValueError("Password must contain at least one numeric digit")
+    if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", v):
+        raise ValueError("Password must contain at least one special character")
+    common_passwords = {"password", "12345678", "123456789", "admin123", "qwerty123", "letmein1", "welcome1", "iloveyou"}
+    if v.lower() in common_passwords:
+        raise ValueError("Password is too common or easily guessable")
+    return v
+
 # User Schemas
 class UserBase(BaseModel):
     email: EmailStr
@@ -51,8 +70,13 @@ class UserBase(BaseModel):
         return v
 
 class UserCreate(UserBase):
-    password: Optional[str] = Field(None, min_length=6, max_length=128)
+    password: Optional[str] = Field(None, min_length=8, max_length=128)
     remember_me: Optional[bool] = False
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: Optional[str]) -> Optional[str]:
+        return validate_password_strength_str(v)
 
 class UserLogin(BaseModel):
     email: Optional[EmailStr] = None
@@ -88,6 +112,10 @@ class UserOut(UserBase):
     timezone: str = "UTC"
     language: str = "en"
     notification_settings: Optional[dict] = None
+    failed_login_attempts: int = 0
+    locked_until: Optional[datetime] = None
+    last_login_at: Optional[datetime] = None
+    last_login_ip: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -102,14 +130,30 @@ class Token(BaseModel):
     username: Optional[str] = None
 
 class RefreshTokenRequest(BaseModel):
-    refresh_token: str
+    refresh_token: Optional[str] = None
 
 class PasswordResetRequest(BaseModel):
     email: EmailStr
 
 class PasswordResetConfirm(BaseModel):
     token: str
-    new_password: str = Field(..., min_length=6, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v: str) -> str:
+        res = validate_password_strength_str(v)
+        return res or v
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_change_password(cls, v: str) -> str:
+        res = validate_password_strength_str(v)
+        return res or v
 
 class EmailVerificationRequest(BaseModel):
     email: Optional[EmailStr] = None
@@ -124,14 +168,37 @@ class SessionOut(BaseModel):
     id: int
     user_id: int
     ip_address: Optional[str] = None
+    last_ip: Optional[str] = None
     user_agent: Optional[str] = None
+    device_name: Optional[str] = None
+    device_type: Optional[str] = None
     is_active: bool
     remember_me: bool
+    last_active_at: Optional[datetime] = None
     created_at: datetime
     expires_at: datetime
+    is_current: Optional[bool] = False
 
     class Config:
         from_attributes = True
+
+class SecurityEventOut(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    event_type: str
+    status: str
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    device_info: Optional[str] = None
+    details: Optional[dict] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class CSRFTokenOut(BaseModel):
+    csrf_token: str
+    header_name: str = "X-CSRF-Token"
 
 class TokenData(BaseModel):
     user_id: Optional[int] = None

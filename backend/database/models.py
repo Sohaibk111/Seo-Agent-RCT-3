@@ -16,6 +16,10 @@ class User(Base):
     timezone = Column(String, default="UTC", nullable=False)
     language = Column(String, default="en", nullable=False)
     notification_settings = Column(JSON, default=dict)
+    failed_login_attempts = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime, nullable=True)
+    last_login_at = Column(DateTime, nullable=True)
+    last_login_ip = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     websites = relationship("Website", back_populates="owner", cascade="all, delete-orphan")
@@ -29,6 +33,8 @@ class User(Base):
     password_reset_tokens = relationship("PasswordResetToken", back_populates="user", cascade="all, delete-orphan")
     email_verification_tokens = relationship("EmailVerificationToken", back_populates="user", cascade="all, delete-orphan")
     memberships = relationship("Membership", back_populates="user", cascade="all, delete-orphan")
+    password_history = relationship("PasswordHistory", back_populates="user", cascade="all, delete-orphan")
+    security_events = relationship("SecurityEvent", back_populates="user", cascade="all, delete-orphan")
 
 
 class Website(Base):
@@ -201,14 +207,59 @@ class UserSession(Base):
     session_token = Column(String, unique=True, index=True, nullable=False)
     refresh_token = Column(String, unique=True, index=True, nullable=False)
     ip_address = Column(String, nullable=True)
+    last_ip = Column(String, nullable=True)
     user_agent = Column(String, nullable=True)
+    device_name = Column(String, nullable=True)
+    device_type = Column(String, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     remember_me = Column(Boolean, default=False, nullable=False)
     expires_at = Column(DateTime, nullable=False)
+    last_active_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="sessions")
+
+
+class PasswordHistory(Base):
+    __tablename__ = "password_history"
+    __table_args__ = (
+        Index("ix_password_history_user_created", "user_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    hashed_password = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="password_history")
+
+
+class UsedRefreshToken(Base):
+    __tablename__ = "used_refresh_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_id = Column(Integer, nullable=True, index=True)
+    token_hash = Column(String, unique=True, index=True, nullable=False)
+    revoked_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SecurityEvent(Base):
+    __tablename__ = "security_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    status = Column(String, default="info", nullable=False)
+    ip_address = Column(String, nullable=True, index=True)
+    user_agent = Column(String, nullable=True)
+    device_info = Column(String, nullable=True)
+    details = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", back_populates="security_events")
 
 
 class PasswordResetToken(Base):

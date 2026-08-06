@@ -8,7 +8,8 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "lint": "tsc --noEmit",
-    "test": "tsx tests/authorization.test.ts"
+    "test": "tsx tests/authorization.test.ts && tsx tests/auth_security_hardening.test.ts",
+    "test:auth": "tsx tests/auth_security_hardening.test.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.0.0",
