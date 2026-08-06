@@ -757,3 +757,107 @@ class RankJobRequest(BaseModel):
     @classmethod
     def validate_domain(cls, v: Optional[str]) -> Optional[str]:
         return validate_domain_str(v)
+
+
+# --- Crawl Job Schemas ---
+
+class CrawlJobCreate(BaseModel):
+    triggered_by: Optional[str] = Field("manual", description="Trigger mechanism: manual, scheduled, api")
+    crawler_version: Optional[str] = Field("1.0.0", description="Crawler version string")
+
+class CrawlPageCreate(BaseModel):
+    url: str
+    depth: Optional[int] = 0
+    status_code: Optional[int] = 200
+    content_type: Optional[str] = "text/html"
+    title: Optional[str] = None
+    meta_description: Optional[str] = None
+    canonical: Optional[str] = None
+    h1: Optional[str] = None
+    word_count: Optional[int] = 0
+    internal_links: Optional[int] = 0
+    external_links: Optional[int] = 0
+    noindex: Optional[bool] = False
+    nofollow: Optional[bool] = False
+    redirect_target: Optional[str] = None
+    response_time: Optional[int] = None
+
+class CrawlPageOut(BaseModel):
+    id: int
+    crawl_job_id: int
+    url: str
+    depth: int = 0
+    status_code: Optional[int] = None
+    content_type: Optional[str] = None
+    title: Optional[str] = None
+    meta_description: Optional[str] = None
+    canonical: Optional[str] = None
+    h1: Optional[str] = None
+    word_count: int = 0
+    internal_links: int = 0
+    external_links: int = 0
+    noindex: bool = False
+    nofollow: bool = False
+    redirect_target: Optional[str] = None
+    response_time: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class CrawlIssueCreate(BaseModel):
+    page_id: Optional[int] = None
+    severity: str = Field(..., description="critical, high, medium, low")
+    category: str = Field(..., description="Issue category e.g. missing_title, broken_link, etc.")
+    message: str
+    recommendation: Optional[str] = None
+
+class CrawlIssueOut(BaseModel):
+    id: int
+    crawl_job_id: int
+    page_id: Optional[int] = None
+    severity: str
+    category: str
+    message: str
+    recommendation: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class CrawlStatsOut(BaseModel):
+    total_pages: int = 0
+    html_pages: int = 0
+    redirects: int = 0
+    broken_pages: int = 0
+    average_response_time: float = 0.0
+    crawl_duration_seconds: Optional[int] = None
+
+class CrawlJobOut(BaseModel):
+    id: int
+    website_id: int
+    status: str
+    progress: int = 0
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    pages_found: int = 0
+    issues_found: int = 0
+    duration_seconds: Optional[int] = None
+    triggered_by: str = "manual"
+    crawler_version: Optional[str] = "1.0.0"
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    stats: Optional[CrawlStatsOut] = None
+
+    class Config:
+        from_attributes = True
+
+class CrawlProgressUpdate(BaseModel):
+    progress: Optional[int] = Field(None, ge=0, le=100)
+    status: Optional[str] = None
+    pages_found: Optional[int] = Field(None, ge=0)
+    issues_found: Optional[int] = Field(None, ge=0)
+    duration_seconds: Optional[int] = None
+    error_message: Optional[str] = None
+

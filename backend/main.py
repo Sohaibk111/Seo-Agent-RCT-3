@@ -11,6 +11,7 @@ from backend.api.org_routes import router as org_router
 from backend.api.project_routes import router as project_router
 from backend.api.website_routes import router as website_router
 from backend.api.audit_routes import router as audit_router
+from backend.api.crawl_routes import router as crawl_router
 from backend.api.routes import router as api_router
 from backend.exceptions import SEOAgentException
 from backend.logging_config import logger, RequestLoggingMiddleware
@@ -309,6 +310,7 @@ app.include_router(org_router, prefix=settings.API_V1_STR)
 app.include_router(project_router, prefix=settings.API_V1_STR)
 app.include_router(website_router, prefix=settings.API_V1_STR)
 app.include_router(audit_router, prefix=settings.API_V1_STR)
+app.include_router(crawl_router, prefix=settings.API_V1_STR)
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 

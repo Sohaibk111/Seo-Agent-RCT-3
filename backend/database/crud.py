@@ -2347,14 +2347,227 @@ async def delete_project_website_async(
         user_agent=user_agent,
         details={"website_id": w_id, "project_id": p_id, "domain": d_name}
     )
-    await create_org_audit_event_async(
-        db,
-        org_id=org_id,
-        action="website.deleted",
-        actor_id=actor_id,
-        details={"website_id": w_id, "project_id": p_id, "domain": d_name}
-    )
-
     await db.delete(website)
     await db.commit()
+
+
+# --- CRAWL JOBS CRUD ---
+
+async def create_crawl_job_async(
+    db: AsyncSession,
+    website_id: int,
+    triggered_by: str = "manual",
+    crawler_version: str = "1.0.0"
+) -> CrawlJob:
+    job = CrawlJob(
+        website_id=website_id,
+        status="queued",
+        progress=0,
+        triggered_by=triggered_by,
+        crawler_version=crawler_version,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return job
+
+async def get_crawl_job_async(db: AsyncSession, crawl_id: int) -> Optional[CrawlJob]:
+    stmt = select(CrawlJob).options(
+        selectinload(CrawlJob.website),
+        selectinload(CrawlJob.pages),
+        selectinload(CrawlJob.issues)
+    ).where(CrawlJob.id == crawl_id)
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def get_active_crawl_job_for_website_async(db: AsyncSession, website_id: int) -> Optional[CrawlJob]:
+    stmt = select(CrawlJob).where(
+        CrawlJob.website_id == website_id,
+        CrawlJob.status.in_(["queued", "running"])
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+async def list_crawl_jobs_async(
+    db: AsyncSession,
+    website_id: int,
+    skip: int = 0,
+    limit: int = 50
+) -> Tuple[List[CrawlJob], int]:
+    stmt = select(CrawlJob).where(CrawlJob.website_id == website_id).order_by(CrawlJob.created_at.desc()).offset(skip).limit(limit)
+    count_stmt = select(func.count(CrawlJob.id)).where(CrawlJob.website_id == website_id)
+    
+    total_res = await db.execute(count_stmt)
+    total = total_res.scalar_one()
+
+    res = await db.execute(stmt)
+    jobs = list(res.scalars().all())
+    return jobs, total
+
+async def cancel_crawl_async(db: AsyncSession, crawl_job: CrawlJob) -> CrawlJob:
+    if crawl_job.status in ["completed", "failed", "cancelled"]:
+        raise ConflictException(f"Cannot cancel a crawl job that is already in state '{crawl_job.status}'")
+    
+    now = datetime.utcnow()
+    crawl_job.status = "cancelled"
+    crawl_job.finished_at = now
+    if crawl_job.started_at:
+        crawl_job.duration_seconds = int((now - crawl_job.started_at).total_seconds())
+    crawl_job.updated_at = now
+    await db.commit()
+    await db.refresh(crawl_job)
+    return crawl_job
+
+async def retry_crawl_async(db: AsyncSession, crawl_job: CrawlJob) -> CrawlJob:
+    if crawl_job.status in ["queued", "running"]:
+        raise ConflictException(f"Cannot retry a crawl job that is currently '{crawl_job.status}'")
+
+    now = datetime.utcnow()
+    crawl_job.status = "queued"
+    crawl_job.progress = 0
+    crawl_job.pages_found = 0
+    crawl_job.issues_found = 0
+    crawl_job.duration_seconds = None
+    crawl_job.error_message = None
+    crawl_job.started_at = None
+    crawl_job.finished_at = None
+    crawl_job.updated_at = now
+
+    await db.commit()
+    await db.refresh(crawl_job)
+    return crawl_job
+
+async def update_crawl_job_progress_async(
+    db: AsyncSession,
+    crawl_job: CrawlJob,
+    progress: Optional[int] = None,
+    status: Optional[str] = None,
+    pages_found: Optional[int] = None,
+    issues_found: Optional[int] = None,
+    duration_seconds: Optional[int] = None,
+    error_message: Optional[str] = None
+) -> CrawlJob:
+    now = datetime.utcnow()
+    if status is not None:
+        if status == "running" and crawl_job.status == "queued":
+            crawl_job.started_at = now
+        elif status in ["completed", "failed", "cancelled"] and not crawl_job.finished_at:
+            crawl_job.finished_at = now
+            if crawl_job.started_at:
+                crawl_job.duration_seconds = int((now - crawl_job.started_at).total_seconds())
+        crawl_job.status = status
+
+    if progress is not None:
+        crawl_job.progress = progress
+    if pages_found is not None:
+        crawl_job.pages_found = pages_found
+    if issues_found is not None:
+        crawl_job.issues_found = issues_found
+    if duration_seconds is not None:
+        crawl_job.duration_seconds = duration_seconds
+    if error_message is not None:
+        crawl_job.error_message = error_message
+
+    crawl_job.updated_at = now
+    await db.commit()
+    await db.refresh(crawl_job)
+    return crawl_job
+
+async def create_crawl_page_async(
+    db: AsyncSession,
+    crawl_job_id: int,
+    page_data: dict
+) -> CrawlPage:
+    page = CrawlPage(
+        crawl_job_id=crawl_job_id,
+        url=page_data["url"],
+        depth=page_data.get("depth", 0),
+        status_code=page_data.get("status_code", 200),
+        content_type=page_data.get("content_type", "text/html"),
+        title=page_data.get("title"),
+        meta_description=page_data.get("meta_description"),
+        canonical=page_data.get("canonical"),
+        h1=page_data.get("h1"),
+        word_count=page_data.get("word_count", 0),
+        internal_links=page_data.get("internal_links", 0),
+        external_links=page_data.get("external_links", 0),
+        noindex=page_data.get("noindex", False),
+        nofollow=page_data.get("nofollow", False),
+        redirect_target=page_data.get("redirect_target"),
+        response_time=page_data.get("response_time"),
+        created_at=datetime.utcnow()
+    )
+    db.add(page)
+    await db.commit()
+    await db.refresh(page)
+
+    stmt = select(CrawlJob).where(CrawlJob.id == crawl_job_id)
+    res = await db.execute(stmt)
+    job = res.scalars().first()
+    if job:
+        job.pages_found += 1
+        await db.commit()
+
+    return page
+
+async def create_crawl_issue_async(
+    db: AsyncSession,
+    crawl_job_id: int,
+    issue_data: dict
+) -> CrawlIssue:
+    issue = CrawlIssue(
+        crawl_job_id=crawl_job_id,
+        page_id=issue_data.get("page_id"),
+        severity=issue_data["severity"],
+        category=issue_data["category"],
+        message=issue_data["message"],
+        recommendation=issue_data.get("recommendation"),
+        created_at=datetime.utcnow()
+    )
+    db.add(issue)
+    await db.commit()
+    await db.refresh(issue)
+
+    stmt = select(CrawlJob).where(CrawlJob.id == crawl_job_id)
+    res = await db.execute(stmt)
+    job = res.scalars().first()
+    if job:
+        job.issues_found += 1
+        await db.commit()
+
+    return issue
+
+async def calculate_crawl_stats_async(db: AsyncSession, crawl_job_id: int) -> dict:
+    stmt = select(CrawlPage).where(CrawlPage.crawl_job_id == crawl_job_id)
+    res = await db.execute(stmt)
+    pages = list(res.scalars().all())
+
+    total_pages = len(pages)
+    html_pages = sum(1 for p in pages if p.content_type and "html" in p.content_type.lower())
+    redirects = sum(1 for p in pages if (p.status_code and 300 <= p.status_code < 400) or p.redirect_target)
+    broken_pages = sum(1 for p in pages if (p.status_code and p.status_code >= 400) or p.status_code in [0, None])
+    
+    times = [p.response_time for p in pages if p.response_time is not None]
+    avg_response = round(sum(times) / len(times), 2) if times else 0.0
+
+    job_stmt = select(CrawlJob).where(CrawlJob.id == crawl_job_id)
+    job_res = await db.execute(job_stmt)
+    job = job_res.scalars().first()
+
+    duration = job.duration_seconds if job else None
+    if duration is None and job and job.started_at:
+        end_time = job.finished_at or datetime.utcnow()
+        duration = int((end_time - job.started_at).total_seconds())
+
+    return {
+        "total_pages": total_pages,
+        "html_pages": html_pages,
+        "redirects": redirects,
+        "broken_pages": broken_pages,
+        "average_response_time": avg_response,
+        "crawl_duration_seconds": duration
+    }
+
 

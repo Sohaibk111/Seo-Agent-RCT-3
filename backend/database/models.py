@@ -82,6 +82,7 @@ class Website(Base):
     leads = relationship("Lead", back_populates="website", cascade="all, delete-orphan")
     reports = relationship("Report", back_populates="website", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="website", cascade="all, delete-orphan")
+    crawl_jobs = relationship("CrawlJob", back_populates="website", cascade="all, delete-orphan")
 
 
 class AuditResult(Base):
@@ -426,6 +427,86 @@ class Project(Base):
     organization = relationship("Organization", back_populates="projects")
     owner = relationship("User", back_populates="projects")
     websites = relationship("Website", back_populates="project", cascade="all, delete-orphan")
+
+
+class CrawlJob(Base):
+    __tablename__ = "crawl_jobs"
+    __table_args__ = (
+        Index("ix_crawl_jobs_website_id", "website_id"),
+        Index("ix_crawl_jobs_status", "status"),
+        Index("ix_crawl_jobs_website_status", "website_id", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    website_id = Column(Integer, ForeignKey("websites.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String, default="queued", nullable=False, index=True)
+    progress = Column(Integer, default=0, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    pages_found = Column(Integer, default=0, nullable=False)
+    issues_found = Column(Integer, default=0, nullable=False)
+    duration_seconds = Column(Integer, nullable=True)
+    triggered_by = Column(String, default="manual", nullable=False)
+    crawler_version = Column(String, default="1.0.0", nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    website = relationship("Website", back_populates="crawl_jobs")
+    pages = relationship("CrawlPage", back_populates="crawl_job", cascade="all, delete-orphan")
+    issues = relationship("CrawlIssue", back_populates="crawl_job", cascade="all, delete-orphan")
+
+
+class CrawlPage(Base):
+    __tablename__ = "crawl_pages"
+    __table_args__ = (
+        Index("ix_crawl_pages_crawl_job_id", "crawl_job_id"),
+        Index("ix_crawl_pages_url", "url"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    crawl_job_id = Column(Integer, ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    url = Column(String, nullable=False, index=True)
+    depth = Column(Integer, default=0, nullable=False)
+    status_code = Column(Integer, nullable=True)
+    content_type = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    meta_description = Column(Text, nullable=True)
+    canonical = Column(String, nullable=True)
+    h1 = Column(String, nullable=True)
+    word_count = Column(Integer, default=0, nullable=False)
+    internal_links = Column(Integer, default=0, nullable=False)
+    external_links = Column(Integer, default=0, nullable=False)
+    noindex = Column(Boolean, default=False, nullable=False)
+    nofollow = Column(Boolean, default=False, nullable=False)
+    redirect_target = Column(String, nullable=True)
+    response_time = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    crawl_job = relationship("CrawlJob", back_populates="pages")
+    issues = relationship("CrawlIssue", back_populates="page", cascade="all, delete-orphan")
+
+
+class CrawlIssue(Base):
+    __tablename__ = "crawl_issues"
+    __table_args__ = (
+        Index("ix_crawl_issues_crawl_job_id", "crawl_job_id"),
+        Index("ix_crawl_issues_page_id", "page_id"),
+        Index("ix_crawl_issues_severity", "severity"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    crawl_job_id = Column(Integer, ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_id = Column(Integer, ForeignKey("crawl_pages.id", ondelete="CASCADE"), nullable=True, index=True)
+    severity = Column(String, nullable=False, index=True)
+    category = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    recommendation = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    crawl_job = relationship("CrawlJob", back_populates="issues")
+    page = relationship("CrawlPage", back_populates="issues")
+
 
 
 

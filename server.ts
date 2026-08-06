@@ -185,10 +185,62 @@ export interface ProjectRecord {
   updated_at: string;
 }
 
+export interface CrawlJobRecord {
+  id: number;
+  website_id: number;
+  status: string;
+  progress: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  pages_found: number;
+  issues_found: number;
+  duration_seconds?: number | null;
+  triggered_by: string;
+  crawler_version?: string;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CrawlPageRecord {
+  id: number;
+  crawl_job_id: number;
+  url: string;
+  depth: number;
+  status_code?: number | null;
+  content_type?: string | null;
+  title?: string | null;
+  meta_description?: string | null;
+  canonical?: string | null;
+  h1?: string | null;
+  word_count: number;
+  internal_links: number;
+  external_links: number;
+  noindex: boolean;
+  nofollow: boolean;
+  redirect_target?: string | null;
+  response_time?: number | null;
+  created_at: string;
+}
+
+export interface CrawlIssueRecord {
+  id: number;
+  crawl_job_id: number;
+  page_id?: number | null;
+  severity: string;
+  category: string;
+  message: string;
+  recommendation?: string | null;
+  created_at: string;
+}
+
 // --- DATA STORES ---
 
 export const jobs: JobRecord[] = [];
 export const projects: ProjectRecord[] = [];
+export const crawlJobs: CrawlJobRecord[] = [];
+export const crawlPages: CrawlPageRecord[] = [];
+export const crawlIssues: CrawlIssueRecord[] = [];
 
 export function hashPassword(password: string): string {
   const salt = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -2172,6 +2224,297 @@ app.delete('/api/v1/jobs/:id', requireAuth, (req: AuthenticatedRequest, res: Res
   const idx = jobs.findIndex(j => j.id === jobId);
   if (idx !== -1) jobs.splice(idx, 1);
   res.json({ message: 'Job deleted successfully', id: jobId });
+});
+
+// --- CRAWL JOBS ENDPOINTS ---
+
+function computeCrawlStats(crawlId: number) {
+  const pages = crawlPages.filter(p => p.crawl_job_id === crawlId);
+  const totalPages = pages.length;
+  const htmlPages = pages.filter(p => p.content_type && p.content_type.toLowerCase().includes('html')).length;
+  const redirects = pages.filter(p => (p.status_code && p.status_code >= 300 && p.status_code < 400) || p.redirect_target).length;
+  const brokenPages = pages.filter(p => (p.status_code && p.status_code >= 400) || p.status_code === 0 || p.status_code === null).length;
+  const times = pages.map(p => p.response_time).filter((t): t is number => typeof t === 'number');
+  const avgResponse = times.length > 0 ? parseFloat((times.reduce((a, b) => a + b, 0) / times.length).toFixed(2)) : 0;
+  
+  const job = crawlJobs.find(j => j.id === crawlId);
+  let duration = job?.duration_seconds ?? null;
+  if (duration === null && job && job.started_at) {
+    const end = job.finished_at ? new Date(job.finished_at).getTime() : Date.now();
+    duration = Math.floor((end - new Date(job.started_at).getTime()) / 1000);
+  }
+
+  return {
+    total_pages: totalPages,
+    html_pages: htmlPages,
+    redirects,
+    broken_pages: brokenPages,
+    average_response_time: avgResponse,
+    crawl_duration_seconds: duration
+  };
+}
+
+function getWebsiteAndProjectAuth(projectIdParam: string, websiteIdParam: string, userId: number) {
+  const projId = parseInt(projectIdParam, 10);
+  const project = projects.find(p => p.id === projId || p.slug === projectIdParam);
+  if (!project) return { error: 'Project not found', status: 404 };
+
+  const normDomain = normalizeDomain(websiteIdParam);
+  const website = websites.find(w => 
+    w.project_id === project.id &&
+    (w.id.toString() === websiteIdParam || w.domain === websiteIdParam || w.normalized_domain === normDomain)
+  );
+  if (!website) return { error: 'Website not found in specified project', status: 404 };
+
+  return { project, website, status: 200 };
+}
+
+function getCrawlAuth(crawlId: number, userId: number) {
+  const crawlJob = crawlJobs.find(c => c.id === crawlId);
+  if (!crawlJob) return { error: 'Crawl job not found', status: 404 };
+
+  const website = websites.find(w => w.id === crawlJob.website_id);
+  if (!website) return { error: 'Associated website not found', status: 404 };
+
+  const project = projects.find(p => p.id === website.project_id);
+
+  return { crawlJob, website, project, status: 200 };
+}
+
+app.post('/api/v1/projects/:project_id/websites/:website_id/crawls', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const auth = getWebsiteAndProjectAuth(req.params.project_id, req.params.website_id, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const { website } = auth;
+  const activeCrawl = crawlJobs.find(j => j.website_id === website!.id && (j.status === 'queued' || j.status === 'running'));
+  if (activeCrawl) {
+    return res.status(409).json({ error: `An active crawl job (id=${activeCrawl.id}, status='${activeCrawl.status}') already exists for this website`, status_code: 409 });
+  }
+
+  const { triggered_by = 'manual', crawler_version = '1.0.0' } = req.body || {};
+  const newCrawl: CrawlJobRecord = {
+    id: crawlJobs.length + 1,
+    website_id: website!.id,
+    status: 'queued',
+    progress: 0,
+    pages_found: 0,
+    issues_found: 0,
+    triggered_by,
+    crawler_version,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+
+  crawlJobs.push(newCrawl);
+  const stats = computeCrawlStats(newCrawl.id);
+  res.status(201).json({ ...newCrawl, stats });
+});
+
+app.get('/api/v1/projects/:project_id/websites/:website_id/crawls', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const auth = getWebsiteAndProjectAuth(req.params.project_id, req.params.website_id, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const { website } = auth;
+  const skip = parseInt(req.query.skip as string || '0', 10);
+  const limit = parseInt(req.query.limit as string || '50', 10);
+
+  const websiteCrawls = crawlJobs.filter(j => j.website_id === website!.id)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+  const paginated = websiteCrawls.slice(skip, skip + limit).map(j => ({
+    ...j,
+    stats: computeCrawlStats(j.id)
+  }));
+
+  res.json({ items: paginated, total: websiteCrawls.length });
+});
+
+app.get('/api/v1/crawls/:crawl_id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const crawlId = parseInt(req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const stats = computeCrawlStats(crawlId);
+  res.json({ ...auth.crawlJob, stats });
+});
+
+app.post('/api/v1/crawls/:crawl_id/cancel', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const crawlId = parseInt(req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const job = auth.crawlJob!;
+  if (['completed', 'failed', 'cancelled'].includes(job.status)) {
+    return res.status(409).json({ error: `Cannot cancel a crawl job that is already in state '${job.status}'`, status_code: 409 });
+  }
+
+  const now = new Date().toISOString();
+  job.status = 'cancelled';
+  job.finished_at = now;
+  if (job.started_at) {
+    job.duration_seconds = Math.floor((new Date(now).getTime() - new Date(job.started_at).getTime()) / 1000);
+  }
+  job.updated_at = now;
+
+  const stats = computeCrawlStats(job.id);
+  res.json({ ...job, stats });
+});
+
+app.post('/api/v1/crawls/:crawl_id/retry', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const crawlId = parseInt(req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const job = auth.crawlJob!;
+  if (['queued', 'running'].includes(job.status)) {
+    return res.status(409).json({ error: `Cannot retry a crawl job that is currently '${job.status}'`, status_code: 409 });
+  }
+
+  const now = new Date().toISOString();
+  job.status = 'queued';
+  job.progress = 0;
+  job.pages_found = 0;
+  job.issues_found = 0;
+  job.duration_seconds = null;
+  job.error_message = null;
+  job.started_at = null;
+  job.finished_at = null;
+  job.updated_at = now;
+
+  const stats = computeCrawlStats(job.id);
+  res.json({ ...job, stats });
+});
+
+app.get('/api/v1/crawls/:crawl_id/pages', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const crawlId = parseInt(req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  let pages = crawlPages.filter(p => p.crawl_job_id === crawlId);
+
+  const { status_code, search } = req.query;
+  if (status_code) {
+    pages = pages.filter(p => p.status_code === parseInt(status_code as string, 10));
+  }
+  if (search) {
+    const term = (search as string).toLowerCase();
+    pages = pages.filter(p => p.url.toLowerCase().includes(term) || (p.title && p.title.toLowerCase().includes(term)));
+  }
+
+  const skip = parseInt(req.query.skip as string || '0', 10);
+  const limit = parseInt(req.query.limit as string || '50', 10);
+
+  const paginated = pages.slice(skip, skip + limit);
+  res.json({ items: paginated, total: pages.length });
+});
+
+app.post('/api/v1/crawls/:crawl_id/pages', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const crawlId = parseInt(req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const body = req.body || {};
+  const newPage: CrawlPageRecord = {
+    id: crawlPages.length + 1,
+    crawl_job_id: crawlId,
+    url: body.url,
+    depth: body.depth || 0,
+    status_code: body.status_code ?? 200,
+    content_type: body.content_type || 'text/html',
+    title: body.title,
+    meta_description: body.meta_description,
+    canonical: body.canonical,
+    h1: body.h1,
+    word_count: body.word_count || 0,
+    internal_links: body.internal_links || 0,
+    external_links: body.external_links || 0,
+    noindex: Boolean(body.noindex),
+    nofollow: Boolean(body.nofollow),
+    redirect_target: body.redirect_target,
+    response_time: body.response_time,
+    created_at: new Date().toISOString()
+  };
+
+  crawlPages.push(newPage);
+  auth.crawlJob!.pages_found += 1;
+  res.status(201).json(newPage);
+});
+
+app.get('/api/v1/crawls/:crawl_id/issues', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const crawlId = parseInt(req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  let issues = crawlIssues.filter(i => i.crawl_job_id === crawlId);
+
+  const { severity, category } = req.query;
+  if (severity) {
+    issues = issues.filter(i => i.severity === severity);
+  }
+  if (category) {
+    issues = issues.filter(i => i.category === category);
+  }
+
+  const skip = parseInt(req.query.skip as string || '0', 10);
+  const limit = parseInt(req.query.limit as string || '50', 10);
+
+  const paginated = issues.slice(skip, skip + limit);
+  res.json({ items: paginated, total: issues.length });
+});
+
+app.post('/api/v1/crawls/:crawl_id/issues', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const crawlId = parseInt(req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const body = req.body || {};
+  const newIssue: CrawlIssueRecord = {
+    id: crawlIssues.length + 1,
+    crawl_job_id: crawlId,
+    page_id: body.page_id,
+    severity: body.severity,
+    category: body.category,
+    message: body.message,
+    recommendation: body.recommendation,
+    created_at: new Date().toISOString()
+  };
+
+  crawlIssues.push(newIssue);
+  auth.crawlJob!.issues_found += 1;
+  res.status(201).json(newIssue);
+});
+
+app.patch('/api/v1/crawls/:crawl_id/progress', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const crawlId = parseInt(req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const job = auth.crawlJob!;
+  const body = req.body || {};
+  const now = new Date().toISOString();
+
+  if (body.status !== undefined) {
+    if (body.status === 'running' && job.status === 'queued') {
+      job.started_at = now;
+    } else if (['completed', 'failed', 'cancelled'].includes(body.status) && !job.finished_at) {
+      job.finished_at = now;
+      if (job.started_at) {
+        job.duration_seconds = Math.floor((new Date(now).getTime() - new Date(job.started_at).getTime()) / 1000);
+      }
+    }
+    job.status = body.status;
+  }
+
+  if (body.progress !== undefined) job.progress = body.progress;
+  if (body.pages_found !== undefined) job.pages_found = body.pages_found;
+  if (body.issues_found !== undefined) job.issues_found = body.issues_found;
+  if (body.duration_seconds !== undefined) job.duration_seconds = body.duration_seconds;
+  if (body.error_message !== undefined) job.error_message = body.error_message;
+
+  job.updated_at = now;
+
+  const stats = computeCrawlStats(job.id);
+  res.json({ ...job, stats });
 });
 
 // --- VITE MIDDLEWARE & SERVER STARTUP ---
