@@ -3,6 +3,15 @@ import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import crypto from 'crypto';
+import { fetchUrl } from './src/services/httpFetcher';
+import { parseHtml } from './src/services/htmlParser';
+import { RobotsParser, parseRobotsTxt } from './src/services/robotsParser';
+import { parseSitemapXml, discoverSitemapCandidateUrls } from './src/services/sitemapParser';
+import { URLDiscoveryManager, discoverySessions } from './src/services/urlDiscoveryManager';
+import { LinkGraphManager, linkGraphSessions } from './src/services/linkGraphManager';
+import { extractImagesFromHtml, enrichImageFileSizes } from './src/services/imageExtractor';
+import { extractHeadingsFromHtml } from './src/services/headingExtractor';
+import { TechnicalMetadataManager } from './src/services/technicalMetadata';
 
 export const app = express();
 const PORT = 3000;
@@ -2276,10 +2285,405 @@ function getCrawlAuth(crawlId: number, userId: number) {
   const website = websites.find(w => w.id === crawlJob.website_id);
   if (!website) return { error: 'Associated website not found', status: 404 };
 
+  if (website.user_id && website.user_id !== userId) {
+    return { error: 'Forbidden: You do not own this crawl job', status: 403 };
+  }
+
   const project = projects.find(p => p.id === website.project_id);
 
   return { crawlJob, website, project, status: 200 };
 }
+
+app.post('/api/v1/fetch', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { url, timeout } = req.body || {};
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'URL parameter is required' });
+  }
+  const result = await fetchUrl(url, timeout ? parseInt(String(timeout), 10) : 10000);
+  return res.json(result);
+});
+
+app.post('/api/v1/parse-html', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const { html, url } = req.body || {};
+  if (typeof html !== 'string') {
+    return res.status(400).json({ error: 'HTML string parameter is required' });
+  }
+  const result = parseHtml(html, url);
+  return res.json(result);
+});
+
+app.post('/api/v1/parse-robots', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const { content, userAgent, path } = req.body || {};
+  if (typeof content !== 'string') {
+    return res.status(400).json({ error: 'Robots content string is required' });
+  }
+  const ag = userAgent || '*';
+  const parser = new RobotsParser(content);
+  const result = parser.toResult(ag);
+  let isAllowed = true;
+  if (typeof path === 'string') {
+    isAllowed = parser.isAllowed(path, ag);
+  }
+  return res.json({
+    ...result,
+    isAllowed
+  });
+});
+
+app.post('/api/v1/parse-sitemap', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const { xml } = req.body || {};
+  if (typeof xml !== 'string') {
+    return res.status(400).json({ error: 'XML content string is required' });
+  }
+  const result = parseSitemapXml(xml);
+  return res.json(result);
+});
+
+app.post('/api/v1/discover-sitemaps', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const { baseUrl, robotsSitemaps } = req.body || {};
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
+    return res.status(400).json({ error: 'baseUrl string parameter is required' });
+  }
+  const sitemaps = discoverSitemapCandidateUrls(baseUrl, Array.isArray(robotsSitemaps) ? robotsSitemaps : []);
+  return res.json({
+    baseUrl,
+    discoveredCandidates: sitemaps
+  });
+});
+
+// --- URL DISCOVERY & QUEUE MANAGEMENT API ---
+
+app.post('/api/v1/url-discovery/sessions', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const { seedUrl, maxDepth, maxPages, maxRedirects, timeout, retry, allowedDomains } = req.body || {};
+  if (typeof seedUrl !== 'string' || !seedUrl.trim()) {
+    return res.status(400).json({ error: 'seedUrl string parameter is required' });
+  }
+
+  const sessionId = `disc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const manager = new URLDiscoveryManager(sessionId, seedUrl, {
+    maxDepth: typeof maxDepth === 'number' ? maxDepth : undefined,
+    maxPages: typeof maxPages === 'number' ? maxPages : undefined,
+    maxRedirects: typeof maxRedirects === 'number' ? maxRedirects : undefined,
+    timeout: typeof timeout === 'number' ? timeout : undefined,
+    retry: typeof retry === 'number' ? retry : undefined,
+    allowedDomains: Array.isArray(allowedDomains) ? allowedDomains : undefined
+  });
+
+  discoverySessions.set(sessionId, manager);
+
+  return res.status(201).json({
+    sessionId: manager.id,
+    seedUrl: manager.seedUrl,
+    stats: manager.getStats(),
+    config: manager.config
+  });
+});
+
+app.get('/api/v1/url-discovery/sessions/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = discoverySessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'URL discovery session not found' });
+  }
+
+  return res.json({
+    sessionId: manager.id,
+    seedUrl: manager.seedUrl,
+    stats: manager.getStats(),
+    config: manager.config
+  });
+});
+
+app.post('/api/v1/url-discovery/sessions/:id/enqueue', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = discoverySessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'URL discovery session not found' });
+  }
+
+  const { urls, currentDepth = 0, sourceUrl } = req.body || {};
+  if (!Array.isArray(urls)) {
+    return res.status(400).json({ error: 'urls array is required' });
+  }
+
+  const addedCount = manager.addDiscoveredUrls(urls, currentDepth, sourceUrl || manager.seedUrl);
+  return res.json({
+    addedCount,
+    stats: manager.getStats()
+  });
+});
+
+app.post('/api/v1/url-discovery/sessions/:id/next', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = discoverySessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'URL discovery session not found' });
+  }
+
+  const nextItem = manager.next();
+  return res.json({
+    item: nextItem,
+    stats: manager.getStats()
+  });
+});
+
+app.post('/api/v1/url-discovery/sessions/:id/mark-visited', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = discoverySessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'URL discovery session not found' });
+  }
+
+  const { url, statusCode, redirectCount } = req.body || {};
+  if (typeof url !== 'string' || !url.trim()) {
+    return res.status(400).json({ error: 'url string parameter is required' });
+  }
+
+  const success = manager.markVisited(url, statusCode, redirectCount);
+  if (!success) {
+    return res.status(404).json({ error: 'URL not found in pending or queued state' });
+  }
+
+  return res.json({
+    success: true,
+    stats: manager.getStats()
+  });
+});
+
+app.post('/api/v1/url-discovery/sessions/:id/mark-failed', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = discoverySessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'URL discovery session not found' });
+  }
+
+  const { url, error, statusCode } = req.body || {};
+  if (typeof url !== 'string' || !url.trim()) {
+    return res.status(400).json({ error: 'url string parameter is required' });
+  }
+
+  const success = manager.markFailed(url, error || 'Crawl failed', statusCode);
+  if (!success) {
+    return res.status(404).json({ error: 'URL not found in pending or queued state' });
+  }
+
+  return res.json({
+    success: true,
+    stats: manager.getStats()
+  });
+});
+
+app.get('/api/v1/url-discovery/sessions/:id/urls', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = discoverySessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'URL discovery session not found' });
+  }
+
+  const status = req.query.status as any;
+  const urls = manager.getUrlsByStatus(status);
+  return res.json({
+    status: status || 'all',
+    total: urls.length,
+    items: urls
+  });
+});
+
+// --- INTERNAL LINK GRAPH API ---
+
+app.post('/api/v1/link-graph/graphs', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const { baseUrl } = req.body || {};
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
+    return res.status(400).json({ error: 'baseUrl string parameter is required' });
+  }
+
+  const graphId = `graph_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const manager = new LinkGraphManager(graphId, baseUrl);
+  linkGraphSessions.set(graphId, manager);
+
+  return res.status(201).json({
+    graphId: manager.id,
+    baseUrl: manager.baseUrl,
+    summary: manager.getSummary()
+  });
+});
+
+app.get('/api/v1/link-graph/graphs/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = linkGraphSessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'Link graph session not found' });
+  }
+
+  return res.json({
+    graphId: manager.id,
+    baseUrl: manager.baseUrl,
+    summary: manager.getSummary()
+  });
+});
+
+app.post('/api/v1/link-graph/graphs/:id/pages', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = linkGraphSessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'Link graph session not found' });
+  }
+
+  const { url, statusCode, redirectTarget, isExternal } = req.body || {};
+  if (typeof url !== 'string' || !url.trim()) {
+    return res.status(400).json({ error: 'url string parameter is required' });
+  }
+
+  const pageNode = manager.addPage(url, statusCode || 200, redirectTarget, isExternal);
+  return res.json({
+    page: pageNode,
+    summary: manager.getSummary()
+  });
+});
+
+app.post('/api/v1/link-graph/graphs/:id/links', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = linkGraphSessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'Link graph session not found' });
+  }
+
+  const { sourceUrl, targetUrl, anchorText, rel } = req.body || {};
+  if (typeof sourceUrl !== 'string' || !sourceUrl.trim() || typeof targetUrl !== 'string' || !targetUrl.trim()) {
+    return res.status(400).json({ error: 'sourceUrl and targetUrl string parameters are required' });
+  }
+
+  const edge = manager.addLink(sourceUrl, targetUrl, anchorText || '', rel || '');
+  return res.json({
+    edge,
+    summary: manager.getSummary()
+  });
+});
+
+app.get('/api/v1/link-graph/graphs/:id/internal-links', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = linkGraphSessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'Link graph session not found' });
+  }
+
+  const sourceUrl = req.query.sourceUrl as string | undefined;
+  const links = manager.getInternalLinks(sourceUrl);
+  return res.json({
+    total: links.length,
+    links
+  });
+});
+
+app.get('/api/v1/link-graph/graphs/:id/external-links', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = linkGraphSessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'Link graph session not found' });
+  }
+
+  const sourceUrl = req.query.sourceUrl as string | undefined;
+  const links = manager.getExternalLinks(sourceUrl);
+  return res.json({
+    total: links.length,
+    links
+  });
+});
+
+app.get('/api/v1/link-graph/graphs/:id/broken-links', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = linkGraphSessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'Link graph session not found' });
+  }
+
+  const links = manager.getBrokenLinks();
+  return res.json({
+    total: links.length,
+    links
+  });
+});
+
+app.get('/api/v1/link-graph/graphs/:id/orphan-pages', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = linkGraphSessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'Link graph session not found' });
+  }
+
+  const orphans = manager.getOrphanPages();
+  return res.json({
+    total: orphans.length,
+    orphans
+  });
+});
+
+app.get('/api/v1/link-graph/graphs/:id/redirect-chains', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const manager = linkGraphSessions.get(req.params.id);
+  if (!manager) {
+    return res.status(404).json({ error: 'Link graph session not found' });
+  }
+
+  const chains = manager.getRedirectChains();
+  return res.json({
+    total: chains.length,
+    redirectChains: chains
+  });
+});
+
+app.post('/api/v1/extract-images', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { html, baseUrl, checkFileSizes } = req.body || {};
+  if (typeof html !== 'string') {
+    return res.status(400).json({ error: 'html string parameter is required' });
+  }
+
+  const extractionResult = extractImagesFromHtml(html, baseUrl);
+
+  if (checkFileSizes === true) {
+    extractionResult.images = await enrichImageFileSizes(extractionResult.images);
+  }
+
+  return res.json(extractionResult);
+});
+
+app.post('/api/v1/extract-headings', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const { html } = req.body || {};
+  if (typeof html !== 'string') {
+    return res.status(400).json({ error: 'html string parameter is required' });
+  }
+
+  const result = extractHeadingsFromHtml(html);
+  return res.json(result);
+});
+
+// --- TECHNICAL METADATA API ---
+
+app.post('/api/v1/technical-metadata/extract', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { url, html, headers = {}, responseTime = 0, fetchLiveUrl = false } = req.body || {};
+
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'url string parameter is required' });
+  }
+
+  let finalHtml = html || '';
+  let finalHeaders = headers;
+  let finalResponseTime = responseTime;
+
+  if (fetchLiveUrl || !finalHtml) {
+    const fetchRes = await fetchUrl(url);
+    finalHtml = fetchRes.html;
+    finalHeaders = fetchRes.headers;
+    finalResponseTime = fetchRes.response_time;
+  }
+
+  const metadata = TechnicalMetadataManager.extractMetadata(url, finalHtml, finalHeaders, finalResponseTime);
+  TechnicalMetadataManager.storeMetadata(metadata);
+
+  return res.status(201).json(metadata);
+});
+
+app.get('/api/v1/technical-metadata', requireAuth, (_req: AuthenticatedRequest, res: Response) => {
+  const list = TechnicalMetadataManager.listMetadata();
+  return res.json({
+    total: list.length,
+    records: list
+  });
+});
+
+app.get('/api/v1/technical-metadata/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const metadata = TechnicalMetadataManager.getMetadata(req.params.id);
+  if (!metadata) {
+    return res.status(404).json({ error: 'Technical metadata record not found' });
+  }
+  return res.json(metadata);
+});
 
 app.post('/api/v1/projects/:project_id/websites/:website_id/crawls', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const auth = getWebsiteAndProjectAuth(req.params.project_id, req.params.website_id, req.user!.id);
@@ -2516,6 +2920,151 @@ app.patch('/api/v1/crawls/:crawl_id/progress', requireAuth, (req: AuthenticatedR
   const stats = computeCrawlStats(job.id);
   res.json({ ...job, stats });
 });
+
+// --- CRAWL LIFECYCLE MANAGEMENT ENDPOINTS ---
+
+function handleCrawlStart(req: AuthenticatedRequest, res: Response) {
+  const crawlId = parseInt(req.params.id || req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const job = auth.crawlJob!;
+  const now = new Date().toISOString();
+  job.status = 'running';
+  if (!job.started_at) {
+    job.started_at = now;
+  }
+  job.updated_at = now;
+
+  const stats = computeCrawlStats(job.id);
+  return res.json({ ...job, stats });
+}
+
+function handleCrawlPause(req: AuthenticatedRequest, res: Response) {
+  const crawlId = parseInt(req.params.id || req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const job = auth.crawlJob!;
+  const now = new Date().toISOString();
+  job.status = 'paused';
+  job.updated_at = now;
+
+  const stats = computeCrawlStats(job.id);
+  return res.json({ ...job, stats });
+}
+
+function handleCrawlResume(req: AuthenticatedRequest, res: Response) {
+  const crawlId = parseInt(req.params.id || req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const job = auth.crawlJob!;
+  const now = new Date().toISOString();
+  job.status = 'running';
+  job.updated_at = now;
+
+  const stats = computeCrawlStats(job.id);
+  return res.json({ ...job, stats });
+}
+
+function handleCrawlStop(req: AuthenticatedRequest, res: Response) {
+  const crawlId = parseInt(req.params.id || req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const job = auth.crawlJob!;
+  const now = new Date().toISOString();
+  job.status = 'stopped';
+  job.finished_at = now;
+  if (job.started_at) {
+    job.duration_seconds = Math.floor((new Date(now).getTime() - new Date(job.started_at).getTime()) / 1000);
+  }
+  job.updated_at = now;
+
+  const stats = computeCrawlStats(job.id);
+  return res.json({ ...job, stats });
+}
+
+function handleCrawlStatus(req: AuthenticatedRequest, res: Response) {
+  const crawlId = parseInt(req.params.id || req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const job = auth.crawlJob!;
+  const stats = computeCrawlStats(job.id);
+  return res.json({ ...job, stats });
+}
+
+function handleCrawlPagesList(req: AuthenticatedRequest, res: Response) {
+  const crawlId = parseInt(req.params.id || req.params.crawl_id, 10);
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  let pages = crawlPages.filter(p => p.crawl_job_id === crawlId);
+
+  const { status_code, search } = req.query;
+  if (status_code) {
+    pages = pages.filter(p => p.status_code === parseInt(status_code as string, 10));
+  }
+  if (search) {
+    const term = (search as string).toLowerCase();
+    pages = pages.filter(p => p.url.toLowerCase().includes(term) || (p.title && p.title.toLowerCase().includes(term)));
+  }
+
+  const skip = parseInt(req.query.skip as string || '0', 10);
+  const limit = parseInt(req.query.limit as string || '50', 10);
+
+  const paginated = pages.slice(skip, skip + limit);
+  return res.json({
+    crawl_id: crawlId,
+    total: pages.length,
+    pages: paginated,
+    items: paginated
+  });
+}
+
+function handleCrawlPageDetail(req: AuthenticatedRequest, res: Response) {
+  const crawlId = parseInt(req.params.id || req.params.crawl_id, 10);
+  const pageId = parseInt(req.params.page_id, 10);
+
+  const auth = getCrawlAuth(crawlId, req.user!.id);
+  if (auth.status !== 200) return res.status(auth.status).json({ error: auth.error });
+
+  const page = crawlPages.find(p => p.id === pageId && p.crawl_job_id === crawlId);
+  if (!page) {
+    return res.status(404).json({ error: 'Page not found for this crawl job' });
+  }
+
+  return res.json(page);
+}
+
+app.post('/crawl/:id/start', requireAuth, handleCrawlStart);
+app.post('/api/v1/crawl/:id/start', requireAuth, handleCrawlStart);
+app.post('/api/v1/crawls/:id/start', requireAuth, handleCrawlStart);
+
+app.post('/crawl/:id/pause', requireAuth, handleCrawlPause);
+app.post('/api/v1/crawl/:id/pause', requireAuth, handleCrawlPause);
+app.post('/api/v1/crawls/:id/pause', requireAuth, handleCrawlPause);
+
+app.post('/crawl/:id/resume', requireAuth, handleCrawlResume);
+app.post('/api/v1/crawl/:id/resume', requireAuth, handleCrawlResume);
+app.post('/api/v1/crawls/:id/resume', requireAuth, handleCrawlResume);
+
+app.post('/crawl/:id/stop', requireAuth, handleCrawlStop);
+app.post('/api/v1/crawl/:id/stop', requireAuth, handleCrawlStop);
+app.post('/api/v1/crawls/:id/stop', requireAuth, handleCrawlStop);
+
+app.get('/crawl/:id/status', requireAuth, handleCrawlStatus);
+app.get('/api/v1/crawl/:id/status', requireAuth, handleCrawlStatus);
+app.get('/api/v1/crawls/:id/status', requireAuth, handleCrawlStatus);
+
+app.get('/crawl/:id/pages', requireAuth, handleCrawlPagesList);
+app.get('/api/v1/crawl/:id/pages', requireAuth, handleCrawlPagesList);
+
+app.get('/crawl/:id/page/:page_id', requireAuth, handleCrawlPageDetail);
+app.get('/api/v1/crawl/:id/page/:page_id', requireAuth, handleCrawlPageDetail);
+app.get('/api/v1/crawls/:id/pages/:page_id', requireAuth, handleCrawlPageDetail);
 
 // --- VITE MIDDLEWARE & SERVER STARTUP ---
 
