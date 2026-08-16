@@ -437,6 +437,8 @@ async function runTests() {
   console.log(`\n🎉 Test Suite Completed: ${passedCount} passed, ${failedCount} failed.\n`);
   if (failedCount > 0) {
     process.exit(1);
+  } else {
+    process.exit(0);
   }
 }
 

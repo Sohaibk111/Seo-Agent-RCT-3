@@ -148,6 +148,8 @@ Sitemap: https://example.com/sitemap-news.xml
 
   if (failedCount > 0) {
     process.exit(1);
+  } else {
+    process.exit(0);
   }
 }
 

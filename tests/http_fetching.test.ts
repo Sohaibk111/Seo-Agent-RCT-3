@@ -136,11 +136,47 @@ async function runTests() {
     assert.strictEqual(res.status, 400);
   });
 
+  // --- 3. SSRF PROTECTION SECURITY SUITE ---
+  const ssrfTestCases = [
+    { url: 'http://127.0.0.1', desc: 'IPv4 loopback (127.0.0.1)' },
+    { url: 'http://localhost', desc: 'localhost hostname' },
+    { url: 'http://10.0.0.1', desc: '10.0.0.0/8 private network' },
+    { url: 'http://172.16.0.1', desc: '172.16.0.0/12 private network' },
+    { url: 'http://192.168.0.1', desc: '192.168.0.0/16 private network' },
+    { url: 'http://169.254.169.254', desc: 'Cloud metadata IP (169.254.169.254)' },
+    { url: 'http://metadata.google.internal', desc: 'Cloud metadata hostname (metadata.google.internal)' },
+    { url: 'http://[::1]', desc: 'IPv6 loopback ([::1])' },
+    { url: 'http://[fd00::1]', desc: 'IPv6 unique local ([fd00::1])' },
+    { url: 'http://2130706433', desc: 'Integer-encoded IP (2130706433 = 127.0.0.1)' },
+    { url: 'http://0x7f000001', desc: 'Hexadecimal-encoded IP (0x7f000001 = 127.0.0.1)' }
+  ];
+
+  for (const tc of ssrfTestCases) {
+    await test(`SSRF Protection - Reject ${tc.desc}`, async () => {
+      const res = await fetchUrl(tc.url, { allowLocalIp: false, timeoutMs: 2000 });
+      assert.strictEqual(res.status_code, 400);
+      assert.ok(res.error?.includes('SSRF Security Violation') || res.error?.includes('Blocked'));
+    });
+  }
+
+  await test('SSRF Protection - Block redirect to localhost or private IP', async () => {
+    app.get('/test-target/redirect-to-private', (_req, res) => {
+      res.redirect(302, 'http://169.254.169.254/latest/meta-data/');
+    });
+
+    const targetUrl = `${baseUrl}/test-target/redirect-to-private`;
+    const res = await fetchUrl(targetUrl, { allowLocalIp: true, timeoutMs: 2000 });
+    // Should fail or catch redirect SSRF block
+    assert.ok(res.error?.includes('SSRF') || res.status_code >= 400);
+  });
+
   console.log(`\n🎉 HTTP Fetching Test Suite Completed: ${passedCount} passed, ${failedCount} failed.`);
   await stopTestServer();
 
   if (failedCount > 0) {
     process.exit(1);
+  } else {
+    process.exit(0);
   }
 }
 

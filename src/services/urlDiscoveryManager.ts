@@ -5,6 +5,7 @@ export interface DiscoveryConfig {
   timeout: number;
   retry: number;
   allowedDomains?: string[];
+  robotsChecker?: (url: string) => boolean;
 }
 
 export type URLItemStatus = 'queue' | 'pending' | 'visited' | 'failed';
@@ -55,7 +56,8 @@ export class URLDiscoveryManager {
       maxRedirects: config?.maxRedirects ?? 5,
       timeout: config?.timeout ?? 10000,
       retry: config?.retry ?? 3,
-      allowedDomains: config?.allowedDomains
+      allowedDomains: config?.allowedDomains,
+      robotsChecker: config?.robotsChecker
     };
 
     // Auto-enqueue seed URL at depth 0
@@ -123,6 +125,17 @@ export class URLDiscoveryManager {
       }
     }
 
+    // Robots restriction check if configured
+    if (this.config.robotsChecker) {
+      try {
+        if (!this.config.robotsChecker(normalized)) {
+          return false;
+        }
+      } catch {
+        // Ignore check failure and proceed
+      }
+    }
+
     const item: URLItem = {
       id: Math.random().toString(36).substring(2, 11),
       url: normalized,
@@ -156,6 +169,16 @@ export class URLDiscoveryManager {
       }
     }
 
+    return addedCount;
+  }
+
+  public addSitemapUrls(urls: string[], sourceUrl?: string): number {
+    let addedCount = 0;
+    for (const rawUrl of urls) {
+      if (this.enqueue(rawUrl, 0, sourceUrl || this.seedUrl)) {
+        addedCount++;
+      }
+    }
     return addedCount;
   }
 
