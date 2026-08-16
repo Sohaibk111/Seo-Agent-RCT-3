@@ -91,11 +91,21 @@ export interface PasswordResetTokenRecord {
 
 export interface WebsiteRecord {
   id: number;
-  user_id: number;
-  url: string;
+  project_id?: number | null;
+  organization_id?: number | null;
+  owner_id?: number | null;
+  user_id?: number | null;
   domain: string;
-  company_name?: string;
+  name: string;
+  description?: string | null;
+  status: string;
+  settings?: any;
+  metadata?: any;
+  archived: boolean;
+  url?: string | null;
+  company_name?: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface AuditRecord {
@@ -277,8 +287,42 @@ export const verificationTokens: VerificationTokenRecord[] = [];
 export const passwordResetTokens: PasswordResetTokenRecord[] = [];
 
 export const websites: WebsiteRecord[] = [
-  { id: 1, user_id: 1, url: 'https://techflow-seo.com', domain: 'techflow-seo.com', company_name: 'TechFlow Inc.', created_at: new Date().toISOString() },
-  { id: 2, user_id: 1, url: 'https://acme-analytics.io', domain: 'acme-analytics.io', company_name: 'Acme Analytics', created_at: new Date().toISOString() }
+  {
+    id: 1,
+    project_id: 1,
+    organization_id: 1,
+    owner_id: 1,
+    user_id: 1,
+    domain: 'techflow-seo.com',
+    name: 'TechFlow Inc.',
+    description: 'Primary corporate web property and marketing platform',
+    status: 'active',
+    settings: { crawl_frequency: 'weekly', max_depth: 5 },
+    metadata: { tech_stack: 'Next.js', cms: 'Custom' },
+    archived: false,
+    url: 'https://techflow-seo.com',
+    company_name: 'TechFlow Inc.',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: 2,
+    project_id: 1,
+    organization_id: 1,
+    owner_id: 1,
+    user_id: 1,
+    domain: 'acme-analytics.io',
+    name: 'Acme Analytics',
+    description: 'Analytics integration portal',
+    status: 'active',
+    settings: { crawl_frequency: 'daily' },
+    metadata: { framework: 'React' },
+    archived: false,
+    url: 'https://acme-analytics.io',
+    company_name: 'Acme Analytics',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }
 ];
 
 export const auditResults: AuditRecord[] = [
@@ -636,12 +680,36 @@ export function rateLimiterMiddleware(maxRequests = 60, windowMs = 60000) {
 
 // --- REUSABLE AUTHORIZATION & OWNERSHIP HELPERS ---
 
+export function normalizeDomain(input: string): string {
+  if (!input || typeof input !== 'string') {
+    throw new Error('Domain cannot be empty');
+  }
+  let domain = input.trim().toLowerCase();
+  if (domain.startsWith('http://') || domain.startsWith('https://')) {
+    domain = domain.replace(/^https?:\/\//, '');
+  }
+  domain = domain.split('/')[0].split('?')[0].split('#')[0];
+  domain = domain.split(':')[0].trim();
+  const domainRegex = /^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,}$/;
+  if (!domainRegex.test(domain)) {
+    throw new Error('Invalid domain name format');
+  }
+  return domain;
+}
+
 export function checkWebsiteOwnership(websiteId: number, currentUserId: number): { website: WebsiteRecord | null; status: 200 | 403 | 404 } {
   const website = websites.find(w => w.id === websiteId);
   if (!website) {
     return { website: null, status: 404 };
   }
-  if (website.user_id !== currentUserId) {
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, currentUserId);
+    if (!membership) {
+      return { website: null, status: 403 };
+    }
+    return { website, status: 200 };
+  }
+  if (website.user_id !== currentUserId && website.owner_id !== currentUserId) {
     return { website: null, status: 403 };
   }
   return { website, status: 200 };
@@ -1760,25 +1828,286 @@ app.delete('/api/v1/projects/:id', requireAuth, (req: AuthenticatedRequest, res:
   res.json({ message: 'Project deleted successfully', id: projectId });
 });
 
-// Websites Routes
+// ==========================================
+// 14. Project-Scoped & Direct Website Routes (Milestone 6.2 Part 2)
+// ==========================================
+
+// POST /api/v1/projects/:project_id/websites
+app.post('/api/v1/projects/:project_id/websites', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const projectId = parseInt(req.params.project_id, 10);
+  const project = projects.find(p => p.id === projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const membership = getOrgMembership(project.organization_id, req.user!.id);
+  if (!membership || !checkRolePermission(membership.role, 'Member')) {
+    return res.status(403).json({ error: 'Forbidden: Action requires at least Member role in this organization' });
+  }
+
+  const { domain, name, description, status, settings: siteSettings, metadata, owner_id } = req.body;
+  if (!domain) {
+    return res.status(422).json({ error: 'Domain is required' });
+  }
+
+  let canonicalDomain: string;
+  try {
+    canonicalDomain = normalizeDomain(domain);
+  } catch (err: any) {
+    return res.status(422).json({ error: err.message || 'Invalid domain format' });
+  }
+
+  const existingInProject = websites.find(w => w.project_id === projectId && w.domain === canonicalDomain);
+  if (existingInProject) {
+    return res.status(409).json({ error: `Website domain '${canonicalDomain}' is already registered in this project` });
+  }
+
+  const effectiveOwnerId = owner_id !== undefined ? owner_id : req.user!.id;
+  if (effectiveOwnerId) {
+    const ownerMember = getOrgMembership(project.organization_id, effectiveOwnerId);
+    if (!ownerMember) {
+      return res.status(422).json({ error: 'Website owner must be an active member of this organization' });
+    }
+  }
+
+  const siteName = (name && typeof name === 'string' && name.trim()) ? name.trim() : canonicalDomain;
+  const newWebsite: WebsiteRecord = {
+    id: websites.length > 0 ? Math.max(...websites.map(w => w.id)) + 1 : 1,
+    project_id: projectId,
+    organization_id: project.organization_id,
+    owner_id: effectiveOwnerId,
+    user_id: effectiveOwnerId,
+    domain: canonicalDomain,
+    name: siteName,
+    description: description || null,
+    status: status || 'active',
+    settings: siteSettings || {},
+    metadata: metadata || {},
+    archived: false,
+    url: `https://${canonicalDomain}`,
+    company_name: siteName,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+
+  websites.push(newWebsite);
+
+  orgAuditEvents.push({
+    id: orgAuditEvents.length + 1,
+    organization_id: project.organization_id,
+    actor_id: req.user!.id,
+    action: 'website.created',
+    details: { website_id: newWebsite.id, domain: newWebsite.domain, project_id: projectId },
+    ip_address: req.ip || '127.0.0.1',
+    created_at: new Date().toISOString()
+  });
+
+  res.status(201).json(newWebsite);
+});
+
+// GET /api/v1/projects/:project_id/websites/validate-domain
+app.get('/api/v1/projects/:project_id/websites/validate-domain', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const projectId = parseInt(req.params.project_id, 10);
+  const project = projects.find(p => p.id === projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const membership = getOrgMembership(project.organization_id, req.user!.id);
+  if (!membership) {
+    return res.status(403).json({ error: 'Forbidden: You do not have access to this project' });
+  }
+
+  const domainStr = String(req.query.domain || '');
+  const excludeId = req.query.exclude_website_id ? parseInt(String(req.query.exclude_website_id), 10) : undefined;
+
+  let canonicalDomain: string;
+  try {
+    canonicalDomain = normalizeDomain(domainStr);
+  } catch (err: any) {
+    return res.json({
+      domain: domainStr,
+      canonical_domain: null,
+      available: false,
+      valid: false,
+      reason: err.message || 'Invalid domain format'
+    });
+  }
+
+  const collision = websites.find(w => w.project_id === projectId && w.domain === canonicalDomain && (!excludeId || w.id !== excludeId));
+
+  res.json({
+    domain: domainStr,
+    canonical_domain: canonicalDomain,
+    available: !collision,
+    valid: true,
+    reason: collision ? 'Domain already exists in this project' : null
+  });
+});
+
+// GET /api/v1/projects/:project_id/websites
+app.get('/api/v1/projects/:project_id/websites', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const projectId = parseInt(req.params.project_id, 10);
+  const project = projects.find(p => p.id === projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const membership = getOrgMembership(project.organization_id, req.user!.id);
+  if (!membership) {
+    return res.status(403).json({ error: 'Forbidden: You do not have access to this project' });
+  }
+
+  let filtered = websites.filter(w => w.project_id === projectId);
+
+  if (req.query.archived !== undefined) {
+    const isArchived = req.query.archived === 'true';
+    filtered = filtered.filter(w => w.archived === isArchived);
+  } else {
+    filtered = filtered.filter(w => !w.archived);
+  }
+
+  if (req.query.status) {
+    filtered = filtered.filter(w => w.status === req.query.status);
+  }
+
+  if (req.query.search) {
+    const q = (req.query.search as string).toLowerCase().trim();
+    filtered = filtered.filter(w =>
+      w.domain.toLowerCase().includes(q) ||
+      (w.name && w.name.toLowerCase().includes(q)) ||
+      (w.description && w.description.toLowerCase().includes(q))
+    );
+  }
+
+  const sortBy = (req.query.sort_by as string) || 'created_at';
+  const order = (req.query.order as string) || 'desc';
+  filtered.sort((a: any, b: any) => {
+    const valA = a[sortBy] || '';
+    const valB = b[sortBy] || '';
+    if (order === 'asc') return valA > valB ? 1 : -1;
+    return valA < valB ? 1 : -1;
+  });
+
+  const page = parseInt(req.query.page as string, 10) || 1;
+  const size = parseInt(req.query.size as string, 10) || 20;
+  const total = filtered.length;
+  const total_pages = Math.ceil(total / size);
+  const items = filtered.slice((page - 1) * size, page * size);
+
+  res.json({ items, total, page, size, total_pages });
+});
+
+// GET /api/v1/websites (Legacy listing backward compatibility)
 app.get('/api/v1/websites', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  const userWebsites = websites.filter(w => w.user_id === req.user!.id);
+  const userWebsites = websites.filter(w => w.user_id === req.user!.id || w.owner_id === req.user!.id);
   res.json(userWebsites);
 });
 
+// GET /api/v1/websites/:id
 app.get('/api/v1/websites/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const websiteId = parseInt(req.params.id, 10);
-  const { website, status } = checkWebsiteOwnership(websiteId, req.user!.id);
-  if (status === 404) return res.status(404).json({ error: 'Website not found' });
-  if (status === 403) return res.status(403).json({ error: 'Forbidden: You do not own this website' });
+  const website = websites.find(w => w.id === websiteId);
+  if (!website) return res.status(404).json({ error: 'Website not found' });
+
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, req.user!.id);
+    if (!membership) {
+      return res.status(403).json({ error: 'Forbidden: You do not have access to this website' });
+    }
+  } else if (website.user_id !== req.user!.id && website.owner_id !== req.user!.id) {
+    return res.status(403).json({ error: 'Forbidden: You do not own this website' });
+  }
+
+  const ownerUser = users.find(u => u.id === (website.owner_id || website.user_id));
+  res.json({
+    ...website,
+    owner: ownerUser ? { id: ownerUser.id, email: ownerUser.email, username: ownerUser.username, role: ownerUser.role } : null
+  });
+});
+
+// PATCH /api/v1/websites/:id
+app.patch('/api/v1/websites/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const websiteId = parseInt(req.params.id, 10);
+  const website = websites.find(w => w.id === websiteId);
+  if (!website) return res.status(404).json({ error: 'Website not found' });
+
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, req.user!.id);
+    if (!membership) {
+      return res.status(403).json({ error: 'Forbidden: You do not have access to this website' });
+    }
+    const isOwner = (website.owner_id === req.user!.id || website.user_id === req.user!.id);
+    const isManager = checkRolePermission(membership.role, 'Manager');
+    if (!isOwner && !isManager) {
+      return res.status(403).json({ error: 'Forbidden: You must be the website owner or Manager to update' });
+    }
+  } else if (website.user_id !== req.user!.id && website.owner_id !== req.user!.id) {
+    return res.status(403).json({ error: 'Forbidden: You do not own this website' });
+  }
+
+  const { domain, name, description, status, settings: siteSettings, metadata, owner_id } = req.body;
+
+  if (domain !== undefined) {
+    let canonicalDomain: string;
+    try {
+      canonicalDomain = normalizeDomain(domain);
+    } catch (err: any) {
+      return res.status(422).json({ error: err.message || 'Invalid domain format' });
+    }
+
+    if (website.project_id) {
+      const collision = websites.find(w => w.project_id === website.project_id && w.domain === canonicalDomain && w.id !== websiteId);
+      if (collision) {
+        return res.status(409).json({ error: `Domain '${canonicalDomain}' already exists in this project` });
+      }
+    }
+    website.domain = canonicalDomain;
+    website.url = `https://${canonicalDomain}`;
+  }
+
+  if (owner_id !== undefined && website.organization_id) {
+    const ownerMember = getOrgMembership(website.organization_id, owner_id);
+    if (!ownerMember) {
+      return res.status(422).json({ error: 'Website owner must be an active member of this organization' });
+    }
+    website.owner_id = owner_id;
+    website.user_id = owner_id;
+  }
+
+  if (name !== undefined) {
+    website.name = name.trim();
+    website.company_name = name.trim();
+  }
+  if (description !== undefined) website.description = description;
+  if (status !== undefined) website.status = status;
+  if (siteSettings !== undefined) website.settings = siteSettings;
+  if (metadata !== undefined) website.metadata = metadata;
+  website.updated_at = new Date().toISOString();
+
+  if (website.organization_id) {
+    orgAuditEvents.push({
+      id: orgAuditEvents.length + 1,
+      organization_id: website.organization_id,
+      actor_id: req.user!.id,
+      action: 'website.updated',
+      details: { website_id: website.id, domain: website.domain, status: website.status },
+      ip_address: req.ip || '127.0.0.1',
+      created_at: new Date().toISOString()
+    });
+  }
+
   res.json(website);
 });
 
+// DELETE /api/v1/websites/:id
 app.delete('/api/v1/websites/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const websiteId = parseInt(req.params.id, 10);
-  const { status } = checkWebsiteOwnership(websiteId, req.user!.id);
-  if (status === 404) return res.status(404).json({ error: 'Website not found' });
-  if (status === 403) return res.status(403).json({ error: 'Forbidden: You do not own this website' });
+  const website = websites.find(w => w.id === websiteId);
+  if (!website) return res.status(404).json({ error: 'Website not found' });
+
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, req.user!.id);
+    if (!membership || !checkRolePermission(membership.role, 'Admin')) {
+      return res.status(403).json({ error: 'Forbidden: Action requires at least Admin role' });
+    }
+  } else if (website.user_id !== req.user!.id && website.owner_id !== req.user!.id) {
+    return res.status(403).json({ error: 'Forbidden: You do not own this website' });
+  }
 
   const siteIndex = websites.findIndex(w => w.id === websiteId);
   if (siteIndex !== -1) websites.splice(siteIndex, 1);
@@ -1793,7 +2122,196 @@ app.delete('/api/v1/websites/:id', requireAuth, (req: AuthenticatedRequest, res:
     if (reports[i].website_id === websiteId) reports.splice(i, 1);
   }
 
+  if (website.organization_id) {
+    orgAuditEvents.push({
+      id: orgAuditEvents.length + 1,
+      organization_id: website.organization_id,
+      actor_id: req.user!.id,
+      action: 'website.deleted',
+      details: { website_id: websiteId, domain: website.domain },
+      ip_address: req.ip || '127.0.0.1',
+      created_at: new Date().toISOString()
+    });
+  }
+
   res.json({ message: 'Website deleted successfully', id: websiteId });
+});
+
+// POST /api/v1/websites/:id/archive
+app.post('/api/v1/websites/:id/archive', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const websiteId = parseInt(req.params.id, 10);
+  const website = websites.find(w => w.id === websiteId);
+  if (!website) return res.status(404).json({ error: 'Website not found' });
+
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, req.user!.id);
+    if (!membership) return res.status(403).json({ error: 'Forbidden' });
+    const isOwner = (website.owner_id === req.user!.id || website.user_id === req.user!.id);
+    const isManager = checkRolePermission(membership.role, 'Manager');
+    if (!isOwner && !isManager) return res.status(403).json({ error: 'Forbidden: Requires Manager role or owner' });
+  }
+
+  website.archived = true;
+  website.status = 'archived';
+  website.updated_at = new Date().toISOString();
+
+  if (website.organization_id) {
+    orgAuditEvents.push({
+      id: orgAuditEvents.length + 1,
+      organization_id: website.organization_id,
+      actor_id: req.user!.id,
+      action: 'website.archived',
+      details: { website_id: website.id, domain: website.domain },
+      ip_address: req.ip || '127.0.0.1',
+      created_at: new Date().toISOString()
+    });
+  }
+
+  res.json(website);
+});
+
+// POST /api/v1/websites/:id/restore
+app.post('/api/v1/websites/:id/restore', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const websiteId = parseInt(req.params.id, 10);
+  const website = websites.find(w => w.id === websiteId);
+  if (!website) return res.status(404).json({ error: 'Website not found' });
+
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, req.user!.id);
+    if (!membership) return res.status(403).json({ error: 'Forbidden' });
+    const isOwner = (website.owner_id === req.user!.id || website.user_id === req.user!.id);
+    const isManager = checkRolePermission(membership.role, 'Manager');
+    if (!isOwner && !isManager) return res.status(403).json({ error: 'Forbidden: Requires Manager role or owner' });
+  }
+
+  website.archived = false;
+  website.status = 'active';
+  website.updated_at = new Date().toISOString();
+
+  if (website.organization_id) {
+    orgAuditEvents.push({
+      id: orgAuditEvents.length + 1,
+      organization_id: website.organization_id,
+      actor_id: req.user!.id,
+      action: 'website.restored',
+      details: { website_id: website.id, domain: website.domain },
+      ip_address: req.ip || '127.0.0.1',
+      created_at: new Date().toISOString()
+    });
+  }
+
+  res.json(website);
+});
+
+// GET /api/v1/websites/:id/settings
+app.get('/api/v1/websites/:id/settings', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const websiteId = parseInt(req.params.id, 10);
+  const website = websites.find(w => w.id === websiteId);
+  if (!website) return res.status(404).json({ error: 'Website not found' });
+
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, req.user!.id);
+    if (!membership) return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  res.json({ website_id: website.id, domain: website.domain, settings: website.settings || {} });
+});
+
+// PUT /api/v1/websites/:id/settings
+app.put('/api/v1/websites/:id/settings', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const websiteId = parseInt(req.params.id, 10);
+  const website = websites.find(w => w.id === websiteId);
+  if (!website) return res.status(404).json({ error: 'Website not found' });
+
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, req.user!.id);
+    if (!membership) return res.status(403).json({ error: 'Forbidden' });
+    const isOwner = (website.owner_id === req.user!.id || website.user_id === req.user!.id);
+    const isManager = checkRolePermission(membership.role, 'Manager');
+    if (!isOwner && !isManager) return res.status(403).json({ error: 'Forbidden: Requires Manager role or owner' });
+  }
+
+  const newSettings = req.body.settings !== undefined ? req.body.settings : req.body;
+  website.settings = newSettings;
+  website.updated_at = new Date().toISOString();
+
+  if (website.organization_id) {
+    orgAuditEvents.push({
+      id: orgAuditEvents.length + 1,
+      organization_id: website.organization_id,
+      actor_id: req.user!.id,
+      action: 'website.settings_updated',
+      details: { website_id: website.id, domain: website.domain, settings_keys: Object.keys(newSettings) },
+      ip_address: req.ip || '127.0.0.1',
+      created_at: new Date().toISOString()
+    });
+  }
+
+  res.json({ website_id: website.id, domain: website.domain, settings: website.settings });
+});
+
+// GET /api/v1/websites/:id/metadata
+app.get('/api/v1/websites/:id/metadata', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const websiteId = parseInt(req.params.id, 10);
+  const website = websites.find(w => w.id === websiteId);
+  if (!website) return res.status(404).json({ error: 'Website not found' });
+
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, req.user!.id);
+    if (!membership) return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  res.json({
+    website_id: website.id,
+    project_id: website.project_id,
+    organization_id: website.organization_id,
+    domain: website.domain,
+    name: website.name,
+    status: website.status,
+    archived: website.archived,
+    created_at: website.created_at,
+    updated_at: website.updated_at,
+    metadata: website.metadata || {}
+  });
+});
+
+// GET /api/v1/websites/:id/stats
+app.get('/api/v1/websites/:id/stats', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const websiteId = parseInt(req.params.id, 10);
+  const website = websites.find(w => w.id === websiteId);
+  if (!website) return res.status(404).json({ error: 'Website not found' });
+
+  if (website.organization_id) {
+    const membership = getOrgMembership(website.organization_id, req.user!.id);
+    if (!membership) return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const auditsCount = auditResults.filter(a => a.website_id === websiteId).length;
+  const leadsCount = leads.filter(l => l.website_id === websiteId).length;
+  const reportsCount = reports.filter(r => r.website_id === websiteId).length;
+  const jobsCount = jobs.filter(j => j.website_id === websiteId).length;
+  const settingsCount = website.settings ? Object.keys(website.settings).length : 0;
+  const daysActive = website.created_at
+    ? Math.max(0, Math.floor((Date.now() - new Date(website.created_at).getTime()) / (1000 * 60 * 60 * 24)))
+    : 0;
+
+  res.json({
+    website_id: website.id,
+    project_id: website.project_id,
+    organization_id: website.organization_id,
+    domain: website.domain,
+    name: website.name,
+    status: website.status,
+    archived: website.archived,
+    created_at: website.created_at,
+    updated_at: website.updated_at,
+    days_active: daysActive,
+    audits_count: auditsCount,
+    jobs_count: jobsCount,
+    leads_count: leadsCount,
+    reports_count: reportsCount,
+    settings_count: settingsCount
+  });
 });
 
 // Technical Audit Routes
@@ -1826,10 +2344,18 @@ app.post('/api/v1/audit', requireAuth, async (req: AuthenticatedRequest, res: Re
         targetWebsite = {
           id: websites.length + 1,
           user_id: req.user!.id,
+          owner_id: req.user!.id,
+          name: domain.split('.')[0].toUpperCase(),
+          description: null,
+          status: 'active',
+          archived: false,
+          settings: {},
+          metadata: {},
           url: targetUrl,
           domain,
           company_name: domain.split('.')[0].toUpperCase(),
-          created_at: new Date().toISOString()
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
         };
         websites.push(targetWebsite);
       }
@@ -1844,12 +2370,12 @@ app.post('/api/v1/audit', requireAuth, async (req: AuthenticatedRequest, res: Re
       website_id: targetWebsite.id,
       user_id: req.user!.id,
       score: auditScore,
-      title: `${targetWebsite.company_name} - Official Website & Product Overview`,
+      title: `${targetWebsite.company_name || targetWebsite.name} - Official Website & Product Overview`,
       title_length: 58,
-      meta_description: `Learn how ${targetWebsite.company_name} delivers industry-leading products with fast performance.`,
+      meta_description: `Learn how ${targetWebsite.company_name || targetWebsite.name} delivers industry-leading products with fast performance.`,
       meta_description_length: 145,
-      h1_tags: [`Welcome to ${targetWebsite.company_name}`],
-      canonical_url: targetWebsite.url,
+      h1_tags: [`Welcome to ${targetWebsite.company_name || targetWebsite.name}`],
+      canonical_url: targetWebsite.url || `https://${targetWebsite.domain}`,
       viewport: 'width=device-width, initial-scale=1.0',
       images_count: 12,
       images_without_alt: missingAlt,

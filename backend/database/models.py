@@ -22,7 +22,7 @@ class User(Base):
     last_login_ip = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    websites = relationship("Website", back_populates="owner", cascade="all, delete-orphan")
+    websites = relationship("Website", back_populates="owner", foreign_keys="[Website.owner_id]", cascade="all, delete-orphan")
     audits = relationship("AuditResult", back_populates="owner", cascade="all, delete-orphan")
     leads = relationship("Lead", back_populates="owner", cascade="all, delete-orphan")
     reports = relationship("Report", back_populates="owner", cascade="all, delete-orphan")
@@ -41,18 +41,35 @@ class User(Base):
 class Website(Base):
     __tablename__ = "websites"
     __table_args__ = (
+        Index("ix_websites_project_domain", "project_id", "domain", unique=True),
+        Index("ix_websites_project_archived", "project_id", "archived"),
+        Index("ix_websites_project_status", "project_id", "status"),
         Index("ix_websites_user_domain", "user_id", "domain"),
         Index("ix_websites_user_created", "user_id", "created_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    url = Column(String, nullable=False)
-    domain = Column(String, index=True, nullable=False)
-    company_name = Column(String, nullable=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    domain = Column(String(255), index=True, nullable=False)
+    name = Column(String(255), nullable=False, default="")
+    description = Column(Text, nullable=True)
+    status = Column(String(50), default="active", nullable=False, index=True)
+    settings = Column(JSON, default=dict, nullable=False)
+    metadata_json = Column("metadata", JSON, default=dict, nullable=False)
+    archived = Column(Boolean, default=False, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    owner = relationship("User", back_populates="websites")
+    # Legacy fields for backward compatibility
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    url = Column(String, nullable=True)
+    company_name = Column(String, nullable=True)
+
+    project = relationship("Project", back_populates="websites")
+    organization = relationship("Organization", back_populates="websites")
+    owner = relationship("User", back_populates="websites", foreign_keys=[owner_id])
     audits = relationship("AuditResult", back_populates="website", cascade="all, delete-orphan")
     leads = relationship("Lead", back_populates="website", cascade="all, delete-orphan")
     reports = relationship("Report", back_populates="website", cascade="all, delete-orphan")
@@ -303,6 +320,7 @@ class Organization(Base):
 
     memberships = relationship("Membership", back_populates="organization", cascade="all, delete-orphan")
     projects = relationship("Project", back_populates="organization", cascade="all, delete-orphan")
+    websites = relationship("Website", back_populates="organization", cascade="all, delete-orphan")
     invitations = relationship("Invitation", back_populates="organization", cascade="all, delete-orphan")
     audit_events = relationship("OrganizationAuditEvent", back_populates="organization", cascade="all, delete-orphan")
 
@@ -399,6 +417,7 @@ class Project(Base):
 
     organization = relationship("Organization", back_populates="projects")
     owner = relationship("User", back_populates="owned_projects")
+    websites = relationship("Website", back_populates="project", cascade="all, delete-orphan")
 
 
 

@@ -1290,6 +1290,292 @@ async def delete_user_website_async(db: AsyncSession, website_id: int, user_id: 
     return True
 
 
+# --- PROJECT-CENTRIC WEBSITE CRUD (MILESTONE 6.2 PART 2) ---
+
+def normalize_domain_name(input_str: str) -> str:
+    """Normalize and validate domain into canonical form (lowercase, strip protocol, path, port)."""
+    if not input_str or not isinstance(input_str, str):
+        raise ValueError("Domain cannot be empty")
+    domain = input_str.strip().lower()
+    if domain.startswith("http://") or domain.startswith("https://"):
+        domain = domain.replace("https://", "").replace("http://", "")
+    domain = domain.split("/")[0].split("?")[0].split("#")[0]
+    domain = domain.split(":")[0].strip()
+    if not re.match(r"^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", domain):
+        raise ValueError("Invalid domain name format")
+    return domain
+
+
+async def create_website_in_project_async(
+    db: AsyncSession,
+    project_id: int,
+    organization_id: int,
+    domain: str,
+    name: str,
+    description: Optional[str] = None,
+    status: str = "active",
+    settings: Optional[dict] = None,
+    metadata: Optional[dict] = None,
+    owner_id: Optional[int] = None
+) -> Website:
+    """Create a new project-scoped website."""
+    canonical_domain = normalize_domain_name(domain)
+    website = Website(
+        project_id=project_id,
+        organization_id=organization_id,
+        owner_id=owner_id,
+        user_id=owner_id,
+        domain=canonical_domain,
+        name=name.strip() if name else canonical_domain,
+        description=description,
+        status=status,
+        settings=settings or {},
+        metadata_json=metadata or {},
+        archived=False,
+        url=f"https://{canonical_domain}",
+        company_name=name.strip() if name else canonical_domain
+    )
+    db.add(website)
+    await db.commit()
+    await db.refresh(website)
+    return website
+
+
+async def get_project_website_by_id_async(
+    db: AsyncSession,
+    website_id: int
+) -> Optional[Website]:
+    """Retrieve website by ID with eager loading for project, organization, and owner."""
+    stmt = (
+        select(Website)
+        .options(
+            selectinload(Website.owner),
+            selectinload(Website.project),
+            selectinload(Website.organization)
+        )
+        .where(Website.id == website_id)
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+
+async def get_websites_by_project_async(
+    db: AsyncSession,
+    project_id: int,
+    skip: int = 0,
+    limit: int = 50,
+    status: Optional[str] = None,
+    archived: Optional[bool] = False,
+    search: Optional[str] = None,
+    sort_by: str = "created_at",
+    order: str = "desc"
+) -> List[Website]:
+    """List websites within a project with filtering, search, sorting, and pagination."""
+    stmt = (
+        select(Website)
+        .options(
+            selectinload(Website.owner),
+            selectinload(Website.project)
+        )
+        .where(Website.project_id == project_id)
+    )
+
+    if archived is not None:
+        stmt = stmt.where(Website.archived == archived)
+
+    if status:
+        stmt = stmt.where(Website.status == status)
+
+    if search:
+        pattern = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Website.domain.ilike(pattern),
+                Website.name.ilike(pattern),
+                Website.description.ilike(pattern)
+            )
+        )
+
+    sort_attr = getattr(Website, sort_by, Website.created_at) if hasattr(Website, sort_by) else Website.created_at
+    if order.lower() == "asc":
+        stmt = stmt.order_by(sort_attr.asc())
+    else:
+        stmt = stmt.order_by(sort_attr.desc())
+
+    return await async_paginate(db, stmt, skip=skip, limit=limit)
+
+
+async def count_websites_by_project_async(
+    db: AsyncSession,
+    project_id: int,
+    status: Optional[str] = None,
+    archived: Optional[bool] = False,
+    search: Optional[str] = None
+) -> int:
+    """Count total matching websites within a project."""
+    stmt = select(func.count(Website.id)).where(Website.project_id == project_id)
+
+    if archived is not None:
+        stmt = stmt.where(Website.archived == archived)
+
+    if status:
+        stmt = stmt.where(Website.status == status)
+
+    if search:
+        pattern = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Website.domain.ilike(pattern),
+                Website.name.ilike(pattern),
+                Website.description.ilike(pattern)
+            )
+        )
+
+    result = await db.execute(stmt)
+    return result.scalar_one() or 0
+
+
+async def validate_website_domain_unique_in_project_async(
+    db: AsyncSession,
+    project_id: int,
+    domain: str,
+    exclude_website_id: Optional[int] = None
+) -> bool:
+    """Check whether a normalized domain is already registered within the given project."""
+    canonical_domain = normalize_domain_name(domain)
+    stmt = select(Website.id).where(
+        Website.project_id == project_id,
+        Website.domain == canonical_domain
+    )
+    if exclude_website_id:
+        stmt = stmt.where(Website.id != exclude_website_id)
+    result = await db.execute(stmt)
+    return result.first() is None
+
+
+async def update_website_async(
+    db: AsyncSession,
+    website: Website,
+    name: Optional[str] = None,
+    domain: Optional[str] = None,
+    description: Optional[str] = None,
+    status: Optional[str] = None,
+    settings: Optional[dict] = None,
+    metadata: Optional[dict] = None,
+    owner_id: Optional[int] = None
+) -> Website:
+    """Update website properties."""
+    if name is not None:
+        website.name = name.strip()
+        website.company_name = name.strip()
+    if domain is not None:
+        canonical_domain = normalize_domain_name(domain)
+        website.domain = canonical_domain
+        website.url = f"https://{canonical_domain}"
+    if description is not None:
+        website.description = description
+    if status is not None:
+        website.status = status
+    if settings is not None:
+        website.settings = settings
+    if metadata is not None:
+        website.metadata_json = metadata
+    if owner_id is not None:
+        website.owner_id = owner_id
+        website.user_id = owner_id
+
+    website.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(website)
+    return website
+
+
+async def archive_website_async(
+    db: AsyncSession,
+    website: Website
+) -> Website:
+    """Archive a website."""
+    website.archived = True
+    website.status = "archived"
+    website.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(website)
+    return website
+
+
+async def restore_website_async(
+    db: AsyncSession,
+    website: Website
+) -> Website:
+    """Restore an archived website."""
+    website.archived = False
+    website.status = "active"
+    website.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(website)
+    return website
+
+
+async def delete_website_async(
+    db: AsyncSession,
+    website: Website
+) -> None:
+    """Delete a website and cascade all relations."""
+    await db.delete(website)
+    await db.commit()
+
+
+async def get_website_stats_async(
+    db: AsyncSession,
+    website: Website
+) -> dict:
+    """Calculate foundational website statistics from existing database records."""
+    # Count audit results
+    audit_stmt = select(func.count(AuditResult.id)).where(AuditResult.website_id == website.id)
+    audit_res = await db.execute(audit_stmt)
+    audits_count = audit_res.scalar_one() or 0
+
+    # Count jobs
+    job_stmt = select(func.count(Job.id)).where(Job.website_id == website.id)
+    job_res = await db.execute(job_stmt)
+    jobs_count = job_res.scalar_one() or 0
+
+    # Count leads
+    lead_stmt = select(func.count(Lead.id)).where(Lead.website_id == website.id)
+    lead_res = await db.execute(lead_stmt)
+    leads_count = lead_res.scalar_one() or 0
+
+    # Count reports
+    report_stmt = select(func.count(Report.id)).where(Report.website_id == website.id)
+    report_res = await db.execute(report_stmt)
+    reports_count = report_res.scalar_one() or 0
+
+    days_active = 0
+    if website.created_at:
+        days_active = max(0, (datetime.utcnow() - website.created_at).days)
+
+    settings_count = len(website.settings) if isinstance(website.settings, dict) else 0
+
+    return {
+        "website_id": website.id,
+        "project_id": website.project_id,
+        "organization_id": website.organization_id,
+        "domain": website.domain,
+        "name": website.name,
+        "status": website.status,
+        "archived": website.archived,
+        "created_at": website.created_at,
+        "updated_at": website.updated_at,
+        "days_active": days_active,
+        "audits_count": audits_count,
+        "jobs_count": jobs_count,
+        "leads_count": leads_count,
+        "reports_count": reports_count,
+        "settings_count": settings_count
+    }
+
+
+
 # --- AUDIT CRUD (STRICTLY TENANT ISOLATED) ---
 def get_audit_by_id_unfiltered(db: Session, audit_id: int) -> Optional[AuditResult]:
     """Retrieve audit strictly for ownership validation with relationship eager loading."""

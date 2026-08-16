@@ -483,35 +483,188 @@ class ProjectSlugValidationOut(BaseModel):
 
 
 # Website Schemas
-class WebsiteBase(BaseModel):
-    url: str
-    domain: Optional[str] = None
-    company_name: Optional[str] = Field(None, max_length=100)
+class WebsiteStatus(str, Enum):
+    ACTIVE = "active"
+    PAUSED = "paused"
+    ARCHIVED = "archived"
+    DRAFT = "draft"
 
-    @field_validator("url")
-    @classmethod
-    def validate_url(cls, v: str) -> str:
-        res = validate_url_str(v)
-        if not res:
-            raise ValueError("URL is required")
-        return res
+
+class WebsiteBase(BaseModel):
+    domain: str = Field(..., description="Canonical normalized domain, e.g. example.com")
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=5000)
+    status: Optional[str] = Field("active", description="Status: active, paused, archived, draft")
+    settings: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    url: Optional[str] = None
+    company_name: Optional[str] = None
 
     @field_validator("domain")
     @classmethod
-    def validate_domain(cls, v: Optional[str]) -> Optional[str]:
-        return validate_domain_str(v)
+    def validate_domain(cls, v: str) -> str:
+        res = validate_domain_str(v)
+        if not res:
+            raise ValueError("Domain is required")
+        return res
 
-class WebsiteCreate(WebsiteBase):
-    pass
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            clean = v.strip()
+            if not clean:
+                raise ValueError("Website name cannot be empty")
+            return clean
+        return v
 
-class WebsiteOut(WebsiteBase):
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> str:
+        if not v:
+            return "active"
+        clean = v.strip().lower()
+        allowed = {"active", "paused", "archived", "draft"}
+        if clean not in allowed:
+            raise ValueError(f"Status must be one of: {', '.join(sorted(allowed))}")
+        return clean
+
+
+class WebsiteCreate(BaseModel):
+    domain: str = Field(..., description="Domain name, e.g. example.com")
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=5000)
+    status: Optional[str] = Field("active")
+    settings: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    owner_id: Optional[int] = None
+    url: Optional[str] = None
+    company_name: Optional[str] = None
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, v: str) -> str:
+        res = validate_domain_str(v)
+        if not res:
+            raise ValueError("Domain is required")
+        return res
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            clean = v.strip()
+            if not clean:
+                raise ValueError("Website name cannot be empty")
+            return clean
+        return v
+
+
+class WebsiteUpdate(BaseModel):
+    domain: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=5000)
+    status: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    owner_id: Optional[int] = None
+
+    @field_validator("domain")
+    @classmethod
+    def validate_update_domain(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return validate_domain_str(v)
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def validate_update_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            clean = v.strip()
+            if not clean:
+                raise ValueError("Website name cannot be empty")
+            return clean
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def validate_update_status(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            clean = v.strip().lower()
+            allowed = {"active", "paused", "archived", "draft"}
+            if clean not in allowed:
+                raise ValueError(f"Status must be one of: {', '.join(sorted(allowed))}")
+            return clean
+        return v
+
+
+class WebsiteSettingsUpdate(BaseModel):
+    settings: Dict[str, Any] = Field(..., description="Custom website settings payload")
+
+
+class WebsiteOut(BaseModel):
     id: int
-    user_id: int
+    project_id: Optional[int] = None
+    organization_id: Optional[int] = None
+    owner_id: Optional[int] = None
     domain: str
+    name: str = ""
+    description: Optional[str] = None
+    status: str = "active"
+    settings: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict, alias="metadata_json")
+    archived: bool = False
     created_at: datetime
+    updated_at: Optional[datetime] = None
+    user_id: Optional[int] = None
+    url: Optional[str] = None
+    company_name: Optional[str] = None
+    owner: Optional[UserOut] = None
+    project: Optional[ProjectOut] = None
 
     class Config:
         from_attributes = True
+        populate_by_name = True
+
+
+class WebsiteStatsOut(BaseModel):
+    website_id: int
+    project_id: Optional[int] = None
+    organization_id: Optional[int] = None
+    domain: str
+    name: str
+    status: str
+    archived: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    days_active: int
+    audits_count: int
+    jobs_count: int
+    leads_count: int
+    reports_count: int
+    settings_count: int
+
+
+class WebsiteMetadataOut(BaseModel):
+    website_id: int
+    project_id: Optional[int] = None
+    organization_id: Optional[int] = None
+    domain: str
+    name: str
+    status: str
+    archived: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    metadata: Dict[str, Any] = {}
+
+
+class WebsitePaginated(BaseModel):
+    items: List[WebsiteOut]
+    total: int
+    page: int
+    size: int
+    total_pages: int
+
 
 # Audit Schemas
 class AuditCreate(BaseModel):
