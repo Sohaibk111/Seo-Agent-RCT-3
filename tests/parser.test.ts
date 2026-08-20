@@ -3,6 +3,8 @@ import { extractHeadingsFromHtml } from '../src/services/headingExtractor';
 import { extractImagesFromHtml } from '../src/services/imageExtractor';
 import assert from 'assert';
 
+process.env.NODE_ENV = 'test';
+
 async function runTests() {
   console.log('🏷️ Starting HTML Parser & Extraction Test Suite...\n');
   let passedCount = 0;

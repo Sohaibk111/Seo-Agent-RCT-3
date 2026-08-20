@@ -2,6 +2,8 @@ import http from 'http';
 import assert from 'assert';
 import { executeCrawlPipeline } from '../src/services/crawlPipeline';
 
+process.env.NODE_ENV = 'test';
+
 let mockServer: http.Server;
 let mockServerUrl: string;
 

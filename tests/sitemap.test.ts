@@ -1,6 +1,8 @@
 import { parseSitemapXml, discoverSitemapCandidateUrls } from '../src/services/sitemapParser';
 import assert from 'assert';
 
+process.env.NODE_ENV = 'test';
+
 async function runTests() {
   console.log('🗺️ Starting Sitemap XML Parsing & Discovery Test Suite...\n');
   let passedCount = 0;

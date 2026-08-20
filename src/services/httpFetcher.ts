@@ -1,4 +1,7 @@
 import axios from 'axios';
+import http from 'http';
+import https from 'https';
+import dns from 'dns';
 
 export interface RedirectHop {
   url: string;
@@ -204,6 +207,113 @@ export function validateSafeUrl(rawUrl: string, allowLocalIp: boolean = false): 
 }
 
 /**
+ * Resolves a hostname via DNS and checks whether any resolved address points to private or reserved IP space.
+ * Prevents DNS rebinding and domain-based SSRF bypasses.
+ */
+export async function resolveAndValidateDns(
+  hostname: string,
+  allowLocalIp: boolean = false
+): Promise<{ safe: boolean; ips?: string[]; reason?: string }> {
+  if (allowLocalIp) {
+    return { safe: true };
+  }
+
+  const cleanHost = hostname.replace(/^\[|\]$/g, '').trim().toLowerCase();
+
+  // If already an IPv4 or IPv6 literal, validate directly
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(cleanHost)) {
+    if (isPrivateOrReservedIPv4(cleanHost)) {
+      return { safe: false, reason: `Resolved to blocked private/reserved IPv4 address: ${cleanHost}` };
+    }
+    return { safe: true, ips: [cleanHost] };
+  }
+
+  if (cleanHost.includes(':')) {
+    if (isPrivateOrReservedIPv6(cleanHost)) {
+      return { safe: false, reason: `Resolved to blocked private/reserved IPv6 address: ${cleanHost}` };
+    }
+    return { safe: true, ips: [cleanHost] };
+  }
+
+  try {
+    const addresses = await dns.promises.lookup(cleanHost, { all: true });
+    const resolvedIps: string[] = [];
+
+    for (const record of addresses) {
+      const ip = record.address;
+      resolvedIps.push(ip);
+
+      if (record.family === 4 || ip.includes('.')) {
+        if (isPrivateOrReservedIPv4(ip)) {
+          return {
+            safe: false,
+            ips: resolvedIps,
+            reason: `DNS rebinding/resolution blocked: domain "${cleanHost}" resolved to private/reserved IP: ${ip}`
+          };
+        }
+      } else if (record.family === 6 || ip.includes(':')) {
+        if (isPrivateOrReservedIPv6(ip)) {
+          return {
+            safe: false,
+            ips: resolvedIps,
+            reason: `DNS rebinding/resolution blocked: domain "${cleanHost}" resolved to private/reserved IPv6: ${ip}`
+          };
+        }
+      }
+    }
+
+    return { safe: true, ips: resolvedIps };
+  } catch (err: any) {
+    // If DNS resolution fails with standard lookup errors (e.g. ENOTFOUND)
+    return {
+      safe: false,
+      reason: `DNS resolution failed for hostname "${cleanHost}": ${err.code || err.message}`
+    };
+  }
+}
+
+/**
+ * Creates custom safe lookup function for Node HTTP/HTTPS agents to enforce socket-level DNS resolution checks.
+ */
+export function createSafeDnsLookup(allowLocalIp: boolean = false) {
+  return (
+    hostname: string,
+    options: any,
+    callback: (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void
+  ) => {
+    const cb = typeof options === 'function' ? options : callback;
+    const opts = typeof options === 'function' ? {} : options;
+
+    dns.lookup(hostname, opts, (err, address, family) => {
+      if (err) {
+        return cb(err, address as any, family);
+      }
+
+      if (!allowLocalIp) {
+        const addresses = Array.isArray(address)
+          ? address
+          : [{ address: address as string, family: family as number }];
+
+        for (const item of addresses) {
+          const ip = typeof item === 'string' ? item : item?.address;
+          if (ip) {
+            if (isPrivateOrReservedIPv4(ip) || isPrivateOrReservedIPv6(ip)) {
+              return cb(
+                new Error(`SSRF Security Violation: DNS resolved to private or reserved IP: ${ip}`) as any,
+                address as any,
+                family
+              );
+            }
+          }
+        }
+      }
+
+      cb(null, address as any, family);
+    });
+  };
+}
+
+/**
  * Fetches an HTTP URL and collects status code, redirects, response headers, response time, and HTML content.
  */
 export async function fetchUrl(
@@ -239,12 +349,56 @@ export async function fetchUrl(
     };
   }
 
+  // 2. DNS resolution and rebinding validation
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(targetUrl);
+  } catch {
+    return {
+      url: targetUrl,
+      status_code: 400,
+      redirects: [],
+      headers: {},
+      response_time: Date.now() - startTime,
+      html: '',
+      error: 'SSRF Security Violation: Invalid URL format'
+    };
+  }
+
+  if (!allowLocalIp) {
+    const dnsValidation = await resolveAndValidateDns(parsedUrl.hostname, allowLocalIp);
+    if (!dnsValidation.safe) {
+      const endTime = Date.now();
+      return {
+        url: targetUrl,
+        status_code: 400,
+        redirects: [],
+        headers: {},
+        response_time: endTime - startTime,
+        html: '',
+        error: `SSRF Security Violation: ${dnsValidation.reason}`
+      };
+    }
+  }
+
+  // Create socket-level safe HTTP/HTTPS agents
+  const httpAgent = new http.Agent({
+    lookup: createSafeDnsLookup(allowLocalIp),
+    keepAlive: false
+  });
+  const httpsAgent = new https.Agent({
+    lookup: createSafeDnsLookup(allowLocalIp),
+    keepAlive: false
+  });
+
   try {
     const response = await axios.get(currentUrl, {
       timeout: timeoutMs,
       maxRedirects,
       maxContentLength: maxBytes,
       maxBodyLength: maxBytes,
+      httpAgent,
+      httpsAgent,
       validateStatus: () => true, // Accept all HTTP status codes without throwing
       headers: {
         'User-Agent': 'SEO-Agent-Bot/1.0 (Compatible; HTTP Fetcher)',
@@ -300,7 +454,7 @@ export async function fetchUrl(
     const responseTime = endTime - startTime;
     return {
       url: targetUrl,
-      status_code: err.response?.status || 500,
+      status_code: err.response?.status || (err.message?.includes('SSRF') ? 400 : 500),
       redirects,
       headers: {},
       response_time: responseTime,

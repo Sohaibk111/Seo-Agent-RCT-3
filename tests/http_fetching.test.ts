@@ -1,5 +1,5 @@
 import { app } from '../server';
-import { fetchUrl } from '../src/services/httpFetcher';
+import { fetchUrl, resolveAndValidateDns } from '../src/services/httpFetcher';
 import http from 'http';
 import assert from 'assert';
 
@@ -242,6 +242,36 @@ async function runTests() {
       assert.ok(res.error?.includes('SSRF') || res.status_code >= 400);
     });
   }
+
+  // --- 4. DNS RESOLUTION & REBINDING SSRF PROTECTION ---
+  await test('SSRF Protection - resolveAndValidateDns blocks localhost / loopback domains', async () => {
+    const res = await resolveAndValidateDns('localhost', false);
+    assert.strictEqual(res.safe, false);
+    assert.ok(res.reason?.includes('blocked') || res.reason?.includes('private'));
+  });
+
+  await test('SSRF Protection - resolveAndValidateDns allows resolution with allowLocalIp: true', async () => {
+    const res = await resolveAndValidateDns('localhost', true);
+    assert.strictEqual(res.safe, true);
+  });
+
+  await test('SSRF Protection - resolveAndValidateDns directly identifies private IPv4 literals', async () => {
+    const res = await resolveAndValidateDns('10.0.0.1', false);
+    assert.strictEqual(res.safe, false);
+    assert.ok(res.reason?.includes('blocked'));
+  });
+
+  await test('SSRF Protection - resolveAndValidateDns directly identifies private IPv6 literals', async () => {
+    const res = await resolveAndValidateDns('::1', false);
+    assert.strictEqual(res.safe, false);
+    assert.ok(res.reason?.includes('blocked'));
+  });
+
+  await test('SSRF Protection - fetchUrl blocks domains resolving to local/private addresses', async () => {
+    const res = await fetchUrl('http://localhost:8080/secret', { allowLocalIp: false, timeoutMs: 2000 });
+    assert.strictEqual(res.status_code, 400);
+    assert.ok(res.error?.includes('SSRF Security Violation') || res.error?.includes('Blocked'));
+  });
 
   console.log(`\n🎉 HTTP Fetching Test Suite Completed: ${passedCount} passed, ${failedCount} failed.`);
   await stopTestServer();

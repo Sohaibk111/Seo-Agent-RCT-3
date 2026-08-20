@@ -1,6 +1,8 @@
 import { RobotsParser, parseRobotsTxt } from '../src/services/robotsParser';
 import assert from 'assert';
 
+process.env.NODE_ENV = 'test';
+
 async function runTests() {
   console.log('🤖 Starting Robots.txt Parsing & Policy Test Suite...\n');
   let passedCount = 0;
