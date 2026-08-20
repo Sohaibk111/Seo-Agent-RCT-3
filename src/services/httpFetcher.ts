@@ -34,7 +34,7 @@ export function isPrivateOrReservedIPv4(ip: string): boolean {
     return false;
   }
 
-  const [b0, b1] = parts;
+  const [b0, b1, b2] = parts;
 
   // 0.0.0.0/8 (Current network)
   if (b0 === 0) return true;
@@ -57,11 +57,72 @@ export function isPrivateOrReservedIPv4(ip: string): boolean {
   // 100.64.0.0/10 (Carrier-grade NAT: 100.64.0.0 - 100.127.255.255)
   if (b0 === 100 && b1 >= 64 && b1 <= 127) return true;
 
+  // 192.0.0.0/24 (IETF Protocol Assignments)
+  if (b0 === 192 && b1 === 0 && b2 === 0) return true;
+
+  // 192.0.2.0/24 (TEST-NET-1)
+  if (b0 === 192 && b1 === 0 && b2 === 2) return true;
+
+  // 198.51.100.0/24 (TEST-NET-2)
+  if (b0 === 198 && b1 === 51 && b2 === 100) return true;
+
+  // 203.0.113.0/24 (TEST-NET-3)
+  if (b0 === 203 && b1 === 0 && b2 === 113) return true;
+
+  // 198.18.0.0/15 (Benchmarking: 198.18.0.0 - 198.19.255.255)
+  if (b0 === 198 && (b1 === 18 || b1 === 19)) return true;
+
   // 224.0.0.0/4 (Multicast: 224.0.0.0 - 239.255.255.255)
   if (b0 >= 224 && b0 <= 239) return true;
 
   // 240.0.0.0/4 (Reserved / Future use & Broadcast 255.255.255.255)
   if (b0 >= 240) return true;
+
+  return false;
+}
+
+/**
+ * Checks if an IPv6 address is in a private, loopback, link-local, or reserved range.
+ */
+export function isPrivateOrReservedIPv6(ip: string): boolean {
+  const clean = ip.toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    clean === '::1' ||
+    clean === '::' ||
+    clean === '0:0:0:0:0:0:0:1' ||
+    clean === '0:0:0:0:0:0:0:0'
+  ) {
+    return true;
+  }
+
+  // Unique local addresses (fc00::/7 -> fc.. or fd..)
+  if (clean.startsWith('fc') || clean.startsWith('fd')) {
+    return true;
+  }
+
+  // Link-local addresses (fe80::/10 -> fe8, fe9, fea, feb)
+  if (
+    clean.startsWith('fe8') ||
+    clean.startsWith('fe9') ||
+    clean.startsWith('fea') ||
+    clean.startsWith('feb')
+  ) {
+    return true;
+  }
+
+  // Multicast (ff00::/8)
+  if (clean.startsWith('ff')) {
+    return true;
+  }
+
+  // IPv4-mapped IPv6 (::ffff:x.x.x.x)
+  if (clean.includes('::ffff:')) {
+    const ipv4Part = clean.split('::ffff:')[1];
+    if (ipv4Part && ipv4Part.includes('.')) {
+      return isPrivateOrReservedIPv4(ipv4Part);
+    }
+    return true;
+  }
 
   return false;
 }
@@ -95,13 +156,14 @@ export function validateSafeUrl(rawUrl: string, allowLocalIp: boolean = false): 
     'metadata.goog',
     '169.254.169.254',
     'instance-data',
-    'metadata'
+    'metadata',
+    'wpad'
   ];
-  if (cloudMetadataHosts.includes(hostname)) {
+  if (cloudMetadataHosts.includes(hostname) || hostname.endsWith('.metadata.google.internal')) {
     return { safe: false, reason: `Blocked access to cloud metadata host: ${hostname}` };
   }
 
-  // If local IPs are explicitly allowed (e.g. inside local testing environment)
+  // If local IPs are explicitly allowed (e.g. inside explicit local testing environment)
   if (allowLocalIp) {
     return { safe: true };
   }
@@ -113,7 +175,8 @@ export function validateSafeUrl(rawUrl: string, allowLocalIp: boolean = false): 
     hostname === '0.0.0.0' ||
     hostname === '127.0.0.1' ||
     hostname === '::1' ||
-    hostname === '[::1]'
+    hostname === '[::1]' ||
+    hostname === '0'
   ) {
     return { safe: false, reason: `Blocked localhost/loopback access: ${hostname}` };
   }
@@ -131,19 +194,8 @@ export function validateSafeUrl(rawUrl: string, allowLocalIp: boolean = false): 
   }
 
   // Check IPv6 addresses (enclosed in brackets or plain)
-  const cleanIpv6 = hostname.replace(/^\[|\]$/g, '');
-  if (cleanIpv6.includes(':')) {
-    if (
-      cleanIpv6 === '::1' ||
-      cleanIpv6 === '::' ||
-      cleanIpv6.startsWith('fc') ||
-      cleanIpv6.startsWith('fd') ||
-      cleanIpv6.startsWith('fe80') ||
-      cleanIpv6.startsWith('::ffff:127.') ||
-      cleanIpv6.startsWith('::ffff:10.') ||
-      cleanIpv6.startsWith('::ffff:192.168.') ||
-      cleanIpv6.startsWith('::ffff:172.')
-    ) {
+  if (hostname.includes(':') || hostname.startsWith('[')) {
+    if (isPrivateOrReservedIPv6(hostname)) {
       return { safe: false, reason: `Blocked private/loopback IPv6 address: ${hostname}` };
     }
   }
@@ -164,7 +216,7 @@ export async function fetchUrl(
       : optionsOrTimeout;
 
   const timeoutMs = options.timeoutMs ?? 10000;
-  const allowLocalIp = options.allowLocalIp ?? (process.env.NODE_ENV === 'test');
+  const allowLocalIp = options.allowLocalIp === true;
   const maxBytes = options.maxBytes ?? 10 * 1024 * 1024; // 10MB default
   const maxRedirects = options.maxRedirects ?? 5;
 

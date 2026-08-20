@@ -2295,11 +2295,15 @@ function getCrawlAuth(crawlId: number, userId: number) {
 }
 
 app.post('/api/v1/fetch', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
-  const { url, timeout } = req.body || {};
+  const { url, timeout, allowLocalIp } = req.body || {};
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'URL parameter is required' });
   }
-  const result = await fetchUrl(url, timeout ? parseInt(String(timeout), 10) : 10000);
+  const isTest = process.env.NODE_ENV === 'test';
+  const result = await fetchUrl(url, {
+    timeoutMs: timeout ? parseInt(String(timeout), 10) : 10000,
+    allowLocalIp: isTest && allowLocalIp === true
+  });
   return res.json(result);
 });
 
