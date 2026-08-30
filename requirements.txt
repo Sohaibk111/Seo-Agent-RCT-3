@@ -3,9 +3,17 @@ uvicorn
 sqlalchemy
 aiosqlite
 pydantic
+email-validator
 python-jose
 passlib
 bcrypt
 redis
 alembic
 requests
+httpx
+pytest
+pytest-cov
+pytest-asyncio
+playwright
+pyyaml
+brotli
