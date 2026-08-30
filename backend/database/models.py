@@ -22,7 +22,7 @@ class User(Base):
     last_login_ip = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    websites = relationship("Website", back_populates="owner", cascade="all, delete-orphan")
+    websites = relationship("Website", back_populates="owner", cascade="all, delete-orphan", foreign_keys="[Website.owner_id]")
     audits = relationship("AuditResult", back_populates="owner", cascade="all, delete-orphan")
     leads = relationship("Lead", back_populates="owner", cascade="all, delete-orphan")
     reports = relationship("Report", back_populates="owner", cascade="all, delete-orphan")
@@ -77,7 +77,7 @@ class Website(Base):
 
     project = relationship("Project", back_populates="websites")
     organization = relationship("Organization", back_populates="websites")
-    owner = relationship("User", back_populates="websites")
+    owner = relationship("User", back_populates="websites", foreign_keys=[owner_id])
     audits = relationship("AuditResult", back_populates="website", cascade="all, delete-orphan")
     leads = relationship("Lead", back_populates="website", cascade="all, delete-orphan")
     reports = relationship("Report", back_populates="website", cascade="all, delete-orphan")
