@@ -8,7 +8,7 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "lint": "tsc --noEmit",
-    "test": "tsx tests/authorization.test.ts && tsx tests/auth_security_hardening.test.ts && tsx tests/projects.test.ts && tsx tests/websites.test.ts && tsx tests/crawl_jobs.test.ts && tsx tests/http_fetching.test.ts && tsx tests/html_parsing.test.ts && tsx tests/robots_txt.test.ts && tsx tests/sitemap_xml.test.ts && tsx tests/url_discovery.test.ts && tsx tests/link_graph.test.ts && tsx tests/image_extraction.test.ts && tsx tests/heading_extraction.test.ts && tsx tests/technical_metadata.test.ts && tsx tests/crawl_lifecycle.test.ts && tsx tests/crawler_engine.test.ts && tsx tests/robots.test.ts && tsx tests/sitemap.test.ts && tsx tests/parser.test.ts",
+    "test": "tsx tests/authorization.test.ts && tsx tests/auth_security_hardening.test.ts && tsx tests/projects.test.ts && tsx tests/websites.test.ts && tsx tests/crawl_jobs.test.ts && tsx tests/http_fetching.test.ts && tsx tests/html_parsing.test.ts && tsx tests/robots_txt.test.ts && tsx tests/sitemap_xml.test.ts && tsx tests/url_discovery.test.ts && tsx tests/link_graph.test.ts && tsx tests/image_extraction.test.ts && tsx tests/heading_extraction.test.ts && tsx tests/technical_metadata.test.ts && tsx tests/crawl_lifecycle.test.ts && tsx tests/crawler_engine.test.ts && tsx tests/robots.test.ts && tsx tests/sitemap.test.ts && tsx tests/parser.test.ts && tsx tests/crawl_pipeline_e2e.test.ts",
     "test:projects": "tsx tests/projects.test.ts",
     "test:auth": "tsx tests/auth_security_hardening.test.ts",
     "test:crawls": "tsx tests/crawl_jobs.test.ts",
@@ -23,7 +23,8 @@
     "test:images": "tsx tests/image_extraction.test.ts",
     "test:headings": "tsx tests/heading_extraction.test.ts",
     "test:tech": "tsx tests/technical_metadata.test.ts",
-    "test:lifecycle": "tsx tests/crawl_lifecycle.test.ts"
+    "test:lifecycle": "tsx tests/crawl_lifecycle.test.ts",
+    "test:pipeline": "tsx tests/crawl_pipeline_e2e.test.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.0.0",
@@ -32,8 +33,8 @@
     "clsx": "^2.1.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
-    "jspdf": "^2.5.2",
-    "jspdf-autotable": "^3.8.4",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

@@ -112,6 +112,14 @@ export class LinkGraphManager {
     const isInternal = this.isInternalUrl(normTarget);
     const isBroken = targetNode.statusCode >= 400;
 
+    const existing = this.edges.find(
+      e => e.sourceUrl === normSource && e.targetUrl === normTarget && e.anchorText === anchorText.trim() && e.rel === rel.trim()
+    );
+    if (existing) {
+      existing.isBroken = isBroken;
+      return existing;
+    }
+
     const edge: LinkEdge = {
       id: `edge_${Math.random().toString(36).substring(2, 11)}`,
       sourceUrl: normSource,
