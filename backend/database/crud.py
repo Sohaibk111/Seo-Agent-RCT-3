@@ -8,7 +8,8 @@ from sqlalchemy import select, or_, update, insert, func, and_
 from backend.database.models import (
     User, Website, AuditResult, Lead, Report, KeywordResult, RankCheck, Job,
     UserSession, PasswordResetToken, EmailVerificationToken, Organization,
-    Membership, Invitation, OrganizationAuditEvent, PasswordHistory, UsedRefreshToken, SecurityEvent, Project, AuditLog
+    Membership, Invitation, OrganizationAuditEvent, PasswordHistory, UsedRefreshToken, SecurityEvent, Project, AuditLog,
+    CrawlJob, CrawlPage, CrawlIssue
 )
 from backend.exceptions import ConflictException
 from backend.services.audit_service import log_audit_event_async
